@@ -6,7 +6,6 @@
   - [2D Lidar Setup](#2d-lidar-setup)
   - [Multi-Machine Communication](#multi-machine-communication)
   - [Running Laser Lines Nodes for Visualization](#running-laser-lines-nodes-for-visualization)
-  - [SSH Address List](#ssh-address-list)
   - [TurtleBot3 Drive Setup](#turtlebot3-drive-setup)
 
 ---
@@ -82,21 +81,6 @@ This visualizes LiDAR data as lines
 2. **Run node that publishes `/best_angle` and `/scan`:**
 
         ros2 run laser_lines best_angle_scan
-
----
-
-## SSH Address List
-
-Use these addresses to remotely connect to your TurtleBots via SSH.
-
-**true_home5G_668**
-
-    ssh ubuntu@172.20.10.7
-
-**yawweir**
-
-    ssh ubuntu@172.20.10.2
-
 
 ---
 
