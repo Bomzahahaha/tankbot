@@ -56,7 +56,7 @@ This step configures and verifies that your 2D LiDAR is connected and working pr
 This allows your **PC** (for visualization) and **TurtleBot** (the robot) to communicate over the same network using ROS2.
 
 1. **Make sure both devices are connected to the same Wi-Fi.**
-2. **Check the IP address** of each device:
+2. **Check the IP address** of each device. It should be the same:
 
     ```bash
         ip -4 addr show | grep -oP 'inet \K[\d.]+/\d+'
