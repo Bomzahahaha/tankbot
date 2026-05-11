@@ -1,0 +1,136 @@
+# Capstone TurtleBot: Weld Seam Tracking Robot
+
+This repository contains the source code for my senior/capstone project, which focuses on developing a TurtleBot-based robotic system for weld seam tracking. The system uses sensor data processing and ROS 2 nodes to detect a simulated weld seam and control the robot motion along the target path.
+
+## Project Overview
+
+The goal of this project is to develop an autonomous weld seam tracking system using a mobile robot platform. The robot is designed to detect the position of a weld seam and adjust its movement based on the detected seam location.
+
+This project is part of my senior/capstone work and is intended to demonstrate the integration of:
+
+- ROS 2-based robot control
+- Sensor data processing
+- Weld seam detection
+- Motion control using velocity commands
+- Data logging for testing and analysis
+
+## Repository Structure
+
+```text
+capstone_turtlebot/
+├── src/
+│   ├── median_filter/
+│   │   └── Sensor data filtering and weld detection node
+│   │
+│   └── seam_controller/
+│       └── Robot control, PID control, launch files, and logging nodes
+│
+├── utils/
+│   └── Utility scripts or supporting files
+│
+├── data/
+│   └── Collected data or experimental results
+│
+├── docs/
+│   └── Documentation, diagrams, and project-related notes
+│
+├── .gitignore
+└── README.md
+Main Components
+1. Median Filter Package
+
+The median_filter package is responsible for processing sensor data and reducing noise before seam detection. It helps improve the stability of the detected weld seam position.
+
+Main file:
+
+src/median_filter/median_filter/weld_detector_median.py
+2. Seam Controller Package
+
+The seam_controller package controls the motion of the robot based on the detected seam position. It includes PID control, velocity conversion, and logging nodes.
+
+Main files:
+
+src/seam_controller/seam_controller/pid_node.py
+src/seam_controller/seam_controller/cmd_vel_to_motor.py
+src/seam_controller/seam_controller/control_logger.py
+src/seam_controller/seam_controller/tracking_logger.py
+src/seam_controller/launch/system.launch.py
+System Concept
+
+The system works by detecting the weld seam position from sensor data. The detected position is then compared with the desired center position. The error is sent to a controller, which generates motion commands to adjust the robot's movement.
+
+Basic workflow:
+
+Sensor Data
+    ↓
+Filtering
+    ↓
+Weld Seam Detection
+    ↓
+Error Calculation
+    ↓
+PID Controller
+    ↓
+Velocity Command
+    ↓
+Robot Motion
+Requirements
+
+This project is developed and tested with:
+
+Raspberry Pi 5
+ROS 2
+Python 3
+TurtleBot-based mobile robot platform
+Sensor for seam detection, such as LiDAR or depth-related sensor
+Installation
+
+Clone this repository:
+
+git clone https://github.com/deeeiei/Senior.git
+
+Go to the project directory:
+
+cd Senior
+
+Build the ROS 2 workspace:
+
+colcon build
+
+Source the workspace:
+
+source install/setup.bash
+Running the System
+
+To run the complete system using the launch file:
+
+ros2 launch seam_controller system.launch.py
+
+Alternatively, individual nodes can be run separately depending on the testing setup.
+
+Example:
+
+ros2 run median_filter weld_detector_median
+ros2 run seam_controller pid_node
+Notes
+
+The build/, install/, and log/ folders are not included in this repository because they are generated automatically when building the ROS 2 workspace.
+
+If the workspace is rebuilt, these folders will be created again by running:
+
+colcon build
+Project Status
+
+This project is currently under development as part of my senior/capstone project. The current version focuses on basic weld seam detection, robot motion control, and experimental testing.
+
+Future improvements may include:
+
+Improving sensor accuracy
+Upgrading from Raspberry Pi to NVIDIA Jetson
+Testing with additional sensors such as TOF or TOFD-related sensors
+Improving the robustness of the seam tracking algorithm
+Adding more experimental results and performance evaluation
+Author
+
+Developed by Sawaddiwat Athiwattananont
+Senior/Capstone Project
