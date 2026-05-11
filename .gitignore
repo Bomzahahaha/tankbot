@@ -8,8 +8,16 @@ log/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
 # Editors
 .vscode/
 *.swp
 
+#OS flies
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log

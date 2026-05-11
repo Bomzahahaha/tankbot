@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='ubuntu',
     maintainer_email='komkanin.m@gmail.com',
-    description='TODO: Package description',
+    description='Median filtering and weld seam detection nodes',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -26,7 +26,8 @@ setup(
         'console_scripts': [
             'median = median_filter.median_filter:main',
             'improved_median = median_filter.improved_median_filter:main',
-            'dynamic_median = median_filter.dyamic_median:main',
+            'dynamic_median = median_filter.dynamic_median:main',
+            'weld_detector_median = median_filter.weld_detector_median:main',
         ],
     },
 )

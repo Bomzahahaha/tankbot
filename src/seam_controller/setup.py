@@ -13,14 +13,21 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='alexander',
-    maintainer_email='alexander@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    tests_require=['pytest'],
+    maintainer='ubuntu',
+    maintainer_email='your_email@example.com',
+    description='Seam tracking controller and motor control nodes',
+    license='Apache-2.0',
+    extras_require={
+        'test': [
+            'pytest',
+        ],
+    },
     entry_points={
         'console_scripts': [
-		'pid_tracker = seam_controller.pid_node:main',
+            'pid_node = seam_controller.pid_node:main',
+            'cmd_vel_to_motor = seam_controller.cmd_vel_to_motor:main',
+            'control_logger = seam_controller.control_logger:main',
+            'tracking_logger = seam_controller.tracking_logger:main',
         ],
     },
 )
