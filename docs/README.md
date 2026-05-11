@@ -85,36 +85,4 @@ This visualizes LiDAR data as lines
 ---
 
 
-## TurtleBot3 Drive Setup
 
-This launches the TurtleBot3 base and motor controllers.
-
-📖 **References:**
-- [Robotis TurtleBot3 Bringup Documentation](https://emanual.robotis.com/docs/en/platform/turtlebot3/bringup/#bringup)
-- [Robotis TurtleBot3 Teleoperation Documentation](https://emanual.robotis.com/docs/en/platform/turtlebot3/basic_operation/#basic-operation)
-
----
-
-1. **Set the robot model and launch:**
-
-    ```bash
-    export TURTLEBOT3_MODEL=burger
-    sudo chmod 666 /dev/ttyACM1
-    ros2 launch turtlebot3_bringup robot.launch.py
-    ```
-
-2. **If you see errors or the motors don’t move, click RESET on OpenCR and edit usb_port:**
-
-    ```bash
-      nano ~/turtlebot3_ws/src/turtlebot3/turtlebot3_bringup/launch/robot.launch.py 
-    ```
-
-> ✅ **Check:** When successful, you should hear a startup sound and see log messages like  
-> `[turtlebot3_ros-3] [INFO] [diff_drive_controller]: Init Odometry`
-> `[turtlebot3_ros-3] [INFO] [diff_drive_controller]: Run!`
-
-3. **For Testing with Teleop:**
-   ```bash
-     export TURTLEBOT3_MODEL=burger
-     ros2 run turtlebot3_teleop teleop_keyboard
-   ```
