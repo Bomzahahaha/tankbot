@@ -15,14 +15,14 @@ class CmdVelToMotorClosedLoop(Node):
         self.wheel_base = 0.30
         self.wheel_radius = 0.0365
         self.ticks_per_rev = 200
-        self.max_wheel_speed = 0.13
-        self.min_pwm = 0.0
+        self.max_wheel_speed = 0.20
+        self.min_pwm = 0.30
         self.cmd_timeout = 0.5
-        self.kp = 0.5
+        self.kp = 1.0
         self.ki = 0.01
-        self.integ_limit = 0.2
-        self.alpha = 0.7
-        self.speed_dt = 0.2
+        self.integ_limit = 0.3
+        self.alpha = 0.5
+        self.speed_dt = 0.05
         self.last_cmd_time = time.time()
         self.target_r = 0.0
         self.target_l = 0.0
@@ -134,8 +134,8 @@ class CmdVelToMotorClosedLoop(Node):
         if dt < self.speed_dt:
             return spd, pt, ptime
         delta = ticks - pt
-        if abs(delta) <= 0:
-            spd = spd * 0.8
+        if abs(delta) <= 2:
+            spd = spd * 0.5
             if abs(spd) < 0.001:
                 spd = 0.0
             return spd, ticks, now
