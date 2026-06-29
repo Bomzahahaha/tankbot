@@ -186,7 +186,7 @@ class CmdVelToMotorClosedLoop(Node):
             self.log_counter = 0
             self.get_logger().info(
                 f"spd R={self.speed_r:.3f} L={self.speed_l:.3f} m/s | "
-                f"dist R={self.dist_r:.3f} L={self.dist_l:.3f} m/s |"
+                f"dist R={self.dist_r:.3f} L={self.dist_l:.3f} |"
                 f"pwm_r={pwm_r:.2f} pwm_l={pwm_l:.2f} "
             )
 
