@@ -1,7 +1,5 @@
 from setuptools import find_packages, setup
-
 package_name = 'seam_controller'
-
 setup(
     name=package_name,
     version='0.0.0',
@@ -10,6 +8,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/system.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/followseam.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

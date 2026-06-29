@@ -1,260 +1,220 @@
-import time
+import csv
 import math
+import os
+import time
 import serial
-
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Int32, Float32
-
+from std_msgs.msg import Int32, Float32, String
 from gpiozero import PWMOutputDevice, DigitalOutputDevice
-
 
 class CmdVelToMotorClosedLoop(Node):
     def __init__(self):
-        super().__init__('cmd_vel_to_motor')
-
+        super().__init__("cmd_vel_to_motor")
         self.wheel_base = 0.30
         self.wheel_radius = 0.0365
+        self.ticks_per_rev = 200
         self.max_wheel_speed = 0.20
         self.min_pwm = 0.30
         self.cmd_timeout = 0.5
-
-        self.ticks_per_revolution = 400
-        self.encoder_sign = -1
-
-        self.kp_speed = 1.5
-        self.speed_filter_alpha = 0.8
-        self.min_speed_dt = 0.02
-        self.max_valid_speed = 0.20
-
-        self.left_scale = 1.00
-        self.right_scale = 1.00
-
-        self.left_pwm_pin = 18
-        self.left_dir_pin = 17
-        self.right_pwm_pin = 19
-        self.right_dir_pin = 26
-
-        self.serial_device = '/dev/ttyUSB0'
-        self.serial_baudrate = 115200
-        self.serial_timeout = 0.01
-
-        self.serial_port = None
-        self.right_ticks = 0
-
+        self.kp = 1.0
+        self.ki = 0.01
+        self.integ_limit = 0.3
+        self.alpha = 0.5
+        self.speed_dt = 0.05
         self.last_cmd_time = time.time()
-
-        self.target_left_speed = 0.0
-        self.target_right_speed = 0.0
-
-        self.feedforward_left_pwm = 0.0
-        self.feedforward_right_pwm = 0.0
-
-        self.left_dir_cmd = True
-        self.right_dir_cmd = True
-
-        self.prev_right_ticks = None
-        self.prev_speed_time = None
-        self.measured_right_speed = 0.0
-
-        self.left_pwm = PWMOutputDevice(self.left_pwm_pin, frequency=1000, initial_value=0.0)
-        self.left_dir = DigitalOutputDevice(self.left_dir_pin, initial_value=False)
-
-        self.right_pwm = PWMOutputDevice(self.right_pwm_pin, frequency=1000, initial_value=0.0)
-        self.right_dir = DigitalOutputDevice(self.right_dir_pin, initial_value=False)
-
-        self.open_serial_port()
-
-        self.cmd_sub = self.create_subscription(
-            Twist,
-            '/cmd_vel',
-            self.cmd_callback,
-            10
-        )
-
-        self.right_tick_pub = self.create_publisher(
-            Int32,
-            '/right_encoder_ticks',
-            10
-        )
-
-        self.right_speed_pub = self.create_publisher(
-            Float32,
-            '/right_wheel_speed',
-            10
-        )
-
-        self.serial_timer = self.create_timer(0.01, self.read_serial_data)
-        self.control_timer = self.create_timer(0.02, self.control_loop)
-
-        self.get_logger().info('cmd_vel_to_motor closed-loop node started')
-
-    def open_serial_port(self):
+        self.target_r = 0.0
+        self.target_l = 0.0
+        self.ff_r = 0.0
+        self.ff_l = 0.0
+        self.dir_r = True
+        self.dir_l = True
+        self.ticks_r = 0
+        self.ticks_l = 0
+        self.pt_r = None
+        self.ptime_r = None
+        self.speed_r = 0.0
+        self.integ_r = 0.0
+        self.pt_l = None
+        self.ptime_l = None
+        self.speed_l = 0.0
+        self.integ_l = 0.0
+        self.t0 = time.time()
+        self.log_counter = 0
+        self.cmd_vx = 0.0
+        self.cmd_wz = 0.0
+        self.best_angle = float("nan")
+        self.weld_status = "UNKNOWN"
+        self.mae_r = []
+        self.mae_l = []
+        self.offset_r = None
+        self.offset_l = None
+        os.makedirs("logs", exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        self.f = open(f"logs/log_{ts}.csv", "w", newline="")
+        self.w = csv.writer(self.f)
+        self.w.writerow(["t","vx","wz","target_r","target_l","speed_r","speed_l","err_r","err_l","ticks_r","ticks_l","angle","weld"])
+        self.lpwm = PWMOutputDevice(18, frequency=1000, initial_value=0.0)
+        self.ldir = DigitalOutputDevice(17, initial_value=False)
+        self.rpwm = PWMOutputDevice(19, frequency=1000, initial_value=0.0)
+        self.rdir = DigitalOutputDevice(26, initial_value=False)
+        self.ser = None
         try:
-            self.serial_port = serial.Serial(
-                self.serial_device,
-                self.serial_baudrate,
-                timeout=self.serial_timeout
-            )
+            self.ser = serial.Serial("/dev/ttyUSB0", 115200, timeout=0.01)
             time.sleep(2.0)
-            self.get_logger().info(
-                f'Connected to Arduino on {self.serial_device} at {self.serial_baudrate} baud'
-            )
+            self.get_logger().info("Arduino connected")
         except Exception as e:
-            self.serial_port = None
-            self.get_logger().warn(
-                f'Could not open serial port {self.serial_device}: {e}'
-            )
+            self.get_logger().warn(f"Serial failed: {e}")
+        self.create_subscription(Twist, "/cmd_vel", self.on_cmd, 10)
+        self.create_subscription(Float32, "/best_angle", self.on_angle, 10)
+        self.create_subscription(String, "/weld_status", self.on_weld, 10)
+        self.pub_tr = self.create_publisher(Int32, "/right_encoder_ticks", 10)
+        self.pub_tl = self.create_publisher(Int32, "/left_encoder_ticks", 10)
+        self.pub_sr = self.create_publisher(Float32, "/right_wheel_speed", 10)
+        self.pub_sl = self.create_publisher(Float32, "/left_wheel_speed", 10)
+        self.create_timer(0.01, self.read_serial)
+        self.create_timer(0.05, self.control_loop)
+        self.create_timer(0.05, self.log_data)
+        self.create_timer(1.0, self.summary)
+        self.get_logger().info("cmd_vel_to_motor ready")
 
-    def cmd_callback(self, msg: Twist):
+    def read_serial(self):
+        if not self.ser:
+            return
+        try:
+            while self.ser.in_waiting > 0:
+                line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                if "," not in line:
+                    continue
+                for p in line.split(","):
+                    p = p.strip()
+                    if p.startswith("R:"):
+                        raw = int(p[2:])
+                        if self.offset_r is None:
+                            self.offset_r = raw
+                        self.ticks_r = raw - self.offset_r
+                    elif p.startswith("L:"):
+                        raw = int(p[2:])
+                        if self.offset_l is None:
+                            self.offset_l = raw
+                        self.ticks_l = raw - self.offset_l
+        except Exception as e:
+            self.get_logger().warn(f"Serial: {e}")
+
+    def on_cmd(self, msg):
         self.last_cmd_time = time.time()
+        self.cmd_vx = msg.linear.x
+        self.cmd_wz = msg.angular.z
+        v, w = msg.linear.x, msg.angular.z
+        self.target_r = v + w * self.wheel_base / 2.0
+        self.target_l = v - w * self.wheel_base / 2.0
+        self.ff_r, self.dir_r = self.vel2pwm(self.target_r)
+        self.ff_l, self.dir_l = self.vel2pwm(self.target_l)
 
-        v = msg.linear.x
-        w = msg.angular.z
+    def on_angle(self, msg):
+        self.best_angle = msg.data
 
-        self.target_left_speed = v - (w * self.wheel_base / 2.0)
-        self.target_right_speed = v + (w * self.wheel_base / 2.0)
+    def on_weld(self, msg):
+        self.weld_status = msg.data
 
-        self.feedforward_left_pwm, self.left_dir_cmd = self.velocity_to_pwm(
-            self.target_left_speed
-        )
-        self.feedforward_right_pwm, self.right_dir_cmd = self.velocity_to_pwm(
-            self.target_right_speed
-        )
-
-        self.feedforward_left_pwm *= self.left_scale
-        self.feedforward_right_pwm *= self.right_scale
-
-        self.feedforward_left_pwm = max(0.0, min(self.feedforward_left_pwm, 1.0))
-        self.feedforward_right_pwm = max(0.0, min(self.feedforward_right_pwm, 1.0))
-
-    def velocity_to_pwm(self, velocity):
-        direction = velocity >= 0.0
-        speed = abs(velocity)
-
-        pwm = speed / self.max_wheel_speed if self.max_wheel_speed > 0.0 else 0.0
+    def vel2pwm(self, v):
+        fwd = v >= 0.0
+        pwm = abs(v) / self.max_wheel_speed
         pwm = max(0.0, min(pwm, 1.0))
-
         if pwm > 0.0:
             pwm = self.min_pwm + (1.0 - self.min_pwm) * pwm
-            pwm = min(pwm, 1.0)
+        return min(pwm, 1.0), fwd
 
-        return pwm, direction
-
-    def read_serial_data(self):
-        if self.serial_port is None:
-            return
-
-        try:
-            while self.serial_port.in_waiting > 0:
-                line = self.serial_port.readline().decode(
-                    'utf-8',
-                    errors='ignore'
-                ).strip()
-
-                if not line:
-                    continue
-
-                if line.startswith('T:'):
-                    line = line[2:]
-
-                try:
-                    self.right_ticks = self.encoder_sign * int(line)
-                except ValueError:
-                    self.get_logger().warn(f'Invalid serial data: "{line}"')
-
-        except Exception as e:
-            self.get_logger().warn(f'Serial read error: {e}')
-
-    def compute_right_speed(self):
-        current_time = time.time()
-
-        if self.prev_right_ticks is None or self.prev_speed_time is None:
-            self.prev_right_ticks = self.right_ticks
-            self.prev_speed_time = current_time
-            self.measured_right_speed = 0.0
-            return
-
-        dt = current_time - self.prev_speed_time
-
-        if dt < self.min_speed_dt:
-            return
-
-        delta_ticks = self.right_ticks - self.prev_right_ticks
-
-        delta_rev = delta_ticks / float(self.ticks_per_revolution)
-        delta_distance = delta_rev * (2.0 * math.pi * self.wheel_radius)
-
-        raw_speed = delta_distance / dt
-
-        if abs(raw_speed) <= self.max_valid_speed:
-            self.measured_right_speed = (
-                self.speed_filter_alpha * self.measured_right_speed +
-                (1.0 - self.speed_filter_alpha) * raw_speed
-            )
-
-        self.prev_right_ticks = self.right_ticks
-        self.prev_speed_time = current_time
+    def calc_speed(self, ticks, pt, ptime, spd):
+        now = time.time()
+        if pt is None:
+            return 0.0, ticks, now
+        dt = now - ptime
+        if dt < self.speed_dt:
+            return spd, pt, ptime
+        delta = ticks - pt
+        if abs(delta) <= 2:
+            spd = spd * 0.5
+            if abs(spd) < 0.001:
+                spd = 0.0
+            return spd, ticks, now
+        dist = (ticks - pt) / self.ticks_per_rev * 2.0 * math.pi * self.wheel_radius
+        raw = dist / dt
+        spd = self.alpha * spd + (1.0 - self.alpha) * raw
+        return spd, ticks, now
 
     def control_loop(self):
-        self.compute_right_speed()
-
+        self.speed_r, self.pt_r, self.ptime_r = self.calc_speed(self.ticks_r, self.pt_r, self.ptime_r, self.speed_r)
+        self.speed_l, self.pt_l, self.ptime_l = self.calc_speed(self.ticks_l, self.pt_l, self.ptime_l, self.speed_l)
         if time.time() - self.last_cmd_time > self.cmd_timeout:
-            self.target_left_speed = 0.0
-            self.target_right_speed = 0.0
-            self.feedforward_left_pwm = 0.0
-            self.feedforward_right_pwm = 0.0
+            self.target_r = self.target_l = 0.0
+            self.ff_r = self.ff_l = 0.0
+            self.integ_r = self.integ_l = 0.0
+        if abs(self.target_r) < 1e-4:
+            pwm_r = 0.0
+            self.integ_r = 0.0
+        else:
+            err = self.target_r - self.speed_r
+            self.integ_r = max(-self.integ_limit, min(self.integ_r + err * self.speed_dt, self.integ_limit))
+            pwm_r = self.ff_r + self.kp * err + self.ki * self.integ_r
+        if abs(self.target_l) < 1e-4:
+            pwm_l = 0.0
+            self.integ_l = 0.0
+        else:
+            err = self.target_l - self.speed_l
+            self.integ_l = max(-self.integ_limit, min(self.integ_l + err * self.speed_dt, self.integ_limit))
+            pwm_l = self.ff_l + self.kp * err + self.ki * self.integ_l
+        pwm_r = max(0.0, min(pwm_r, 1.0))
 
-        left_pwm_cmd = self.feedforward_left_pwm
-        if abs(self.target_left_speed) < 1e-4:
-            left_pwm_cmd = 0.0
+        pwm_l = max(0.0, min(pwm_l, 1.0))
+        self.rdir.value = not self.dir_r
+        self.ldir.value = self.dir_l
+        self.rpwm.value = pwm_r
+        self.lpwm.value = pwm_l
+        self.pub_tr.publish(Int32(data=self.ticks_r))
+        self.pub_tl.publish(Int32(data=self.ticks_l))
+        self.pub_sr.publish(Float32(data=float(self.speed_r)))
+        self.pub_sl.publish(Float32(data=float(self.speed_l)))
+        self.log_counter += 1
+        if self.log_counter >= 20:
+            self.log_counter = 0
+            self.get_logger().info(
+                f"R={self.speed_r:.4f} L={self.speed_l:.4f} "
+                f"pwm_r={pwm_r:.2f} pwm_l={pwm_l:.2f} "
+            )
 
-        right_error = self.target_right_speed - self.measured_right_speed
-        right_pwm_cmd = self.feedforward_right_pwm + (self.kp_speed * right_error)
+    def log_data(self):
+        t = time.time() - self.t0
+        er = self.target_r - self.speed_r
+        el = self.target_l - self.speed_l
+        ang = math.degrees(self.best_angle) if not math.isnan(self.best_angle) else "nan"
+        self.mae_r.append(abs(er))
+        self.mae_l.append(abs(el))
+        self.w.writerow([round(t,3), self.cmd_vx, self.cmd_wz, self.target_r, self.target_l, round(self.speed_r,4), round(self.speed_l,4), round(er,4), round(el,4), self.ticks_r, self.ticks_l, ang, self.weld_status])
+        self.f.flush()
 
-        if abs(self.target_right_speed) < 1e-4:
-            right_pwm_cmd = 0.0
-            self.measured_right_speed = 0.0
-
-        left_pwm_cmd = max(0.0, min(left_pwm_cmd, 1.0))
-        right_pwm_cmd = max(0.0, min(right_pwm_cmd, 1.0))
-
-        self.left_dir.value = self.left_dir_cmd
-        self.right_dir.value = not self.right_dir_cmd
-
-        self.left_pwm.value = left_pwm_cmd
-        self.right_pwm.value = right_pwm_cmd
-
-        tick_msg = Int32()
-        tick_msg.data = self.right_ticks
-        self.right_tick_pub.publish(tick_msg)
-
-        speed_msg = Float32()
-        speed_msg.data = float(self.measured_right_speed)
-        self.right_speed_pub.publish(speed_msg)
+    def summary(self):
+        if not self.mae_r:
+            return
+        self.get_logger().info(f"MAE R={sum(self.mae_r)/len(self.mae_r):.4f} L={sum(self.mae_l)/len(self.mae_l):.4f}")
 
     def destroy_node(self):
         try:
-            self.left_pwm.value = 0.0
-            self.right_pwm.value = 0.0
-
-            self.left_pwm.close()
-            self.right_pwm.close()
-            self.left_dir.close()
-            self.right_dir.close()
-
-            if self.serial_port is not None and self.serial_port.is_open:
-                self.serial_port.close()
-
+            self.rpwm.value = 0.0
+            self.lpwm.value = 0.0
+            for d in [self.rpwm, self.lpwm, self.rdir, self.ldir]:
+                d.close()
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+            if not self.f.closed:
+                self.f.close()
         finally:
             super().destroy_node()
-
 
 def main(args=None):
     rclpy.init(args=args)
     node = CmdVelToMotorClosedLoop()
-
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
@@ -263,6 +223,5 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

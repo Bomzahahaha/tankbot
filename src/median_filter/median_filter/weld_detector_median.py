@@ -23,111 +23,54 @@ class WeldDetectorMedian(Node):
             qos_profile_sensor_data
         )
 
-        self.angle_pub = self.create_publisher(
-            Float32,
-            '/best_angle',
-            10
-        )
+        self.angle_pub = self.create_publisher(Float32, '/best_angle', 10)
+        self.status_pub = self.create_publisher(String, '/weld_status', 10)
 
-        self.status_pub = self.create_publisher(
-            String,
-            '/weld_status',
-            10
-        )
-
-        # ==============================
         # ROI
-        # ==============================
         self.roi_start = 330
         self.roi_end = 438
 
-        # ==============================
-        # FILTER PARAMETERS
-        # ==============================
+        # Filter parameters
         self.sg_order = 3
         self.sg_framelen = 15
         self.med_window = 51
 
-        # ==============================
-        # PEAK PARAMETERS
-        # ==============================
-        self.min_prominence = 0.002
+        # Peak parameters
+        self.min_prominence = 0.001
+        self.max_width = 100
 
-        self.min_height_threshold = 0.004
-
-        self.max_width = 60
-
-        # ==============================
-        # T-JUNCTION PARAMETERS
-        # ==============================
-        self.t_junction_ratio = 0.60
-
+        # T-junction parameters
+        self.t_junction_ratio = 0.55
         self.t_junction_count = 0
+        self.t_junction_confirm_threshold = 2
+        self.t_junction_min_separation = 6
+        self.t_junction_min_prominence = 0.002
 
-        self.t_junction_confirm_threshold = 3
-
-        self.t_junction_min_separation = 8
-
-        self.t_junction_min_prominence = 0.001
-
-        # ==============================
-        # TRACKING
-        # ==============================
+        # Tracking
         self.last_valid_angle = float('nan')
-
         self.missed_count = 0
-
         self.reset_threshold = 5
+        self.angle_diff_threshold = math.radians(5)
 
-        self.angle_diff_threshold = math.radians(3)
-
-        # ==============================
-        # TIMEOUT
-        # ==============================
+        # Timeout
         self.last_scan_time = self.get_clock().now()
-
         self.scan_timeout_sec = 3.0
-
-        self.timer = self.create_timer(
-            0.5,
-            self.check_scan_timeout
-        )
-
+        self.timer = self.create_timer(0.5, self.check_scan_timeout)
         self.timeout_triggered = False
 
-        # ==============================
-        # STOP AFTER T-JUNCTION
-        # ==============================
+        # Stop after confirmed T-junction
         self.system_stopped = False
 
-        self.get_logger().info(
-            'Weld Detector (Median) Started.'
-        )
+        self.get_logger().info('Weld Detector (Median) Started.')
 
-    # ==========================================
-    # STATUS
-    # ==========================================
     def publish_status(self, status):
-
         msg = String()
-
         msg.data = status
-
         self.status_pub.publish(msg)
 
-    # ==========================================
-    # PUBLISH NaN
-    # ==========================================
-    def publish_nan(
-        self,
-        reason='',
-        status='NO_WELD'
-    ):
-
+    def publish_nan(self, reason='', status='NO_WELD'):
         msg_out = Float32()
-
         msg_out.data = float('nan')
-
         self.angle_pub.publish(msg_out)
 
         self.publish_status(status)
@@ -135,30 +78,18 @@ class WeldDetectorMedian(Node):
         if reason:
             self.get_logger().warn(reason)
 
-    # ==========================================
-    # TIMEOUT CHECK
-    # ==========================================
     def check_scan_timeout(self):
-
         if self.system_stopped:
             return
 
         current_time = self.get_clock().now()
-
-        time_diff = (
-            current_time - self.last_scan_time
-        ).nanoseconds / 1e9
+        time_diff = (current_time - self.last_scan_time).nanoseconds / 1e9
 
         if time_diff > self.scan_timeout_sec:
-
             if not self.timeout_triggered:
-
                 self.last_valid_angle = float('nan')
-
                 self.missed_count = 0
-
                 self.t_junction_count = 0
-
                 self.timeout_triggered = True
 
                 self.publish_nan(
@@ -166,84 +97,38 @@ class WeldDetectorMedian(Node):
                     status='TIMEOUT'
                 )
 
-    # ==========================================
-    # INDEX TO ANGLE
-    # ==========================================
-    def index_to_angle(
-        self,
-        index,
-        angle_min,
-        angle_increment
-    ):
+    def index_to_angle(self, index, angle_min, angle_increment):
+        return angle_min + (index * angle_increment)
 
-        return angle_min + (
-            index * angle_increment
-        )
-
-    # ==========================================
-    # VALID WELD CHECK
-    # ==========================================
-    def is_valid_weld(
-        self,
-        current_angle,
-        past_angle
-    ):
-
+    def is_valid_weld(self, current_angle, past_angle):
         if math.isnan(past_angle):
             return True
 
-        diff = abs(
-            current_angle - past_angle
-        )
-
+        diff = abs(current_angle - past_angle)
         return diff < self.angle_diff_threshold
 
-    # ==========================================
-    # MAIN CALLBACK
-    # ==========================================
     def scan_callback(self, msg: LaserScan):
-
-        # STOP FOREVER AFTER T-JUNCTION
         if self.system_stopped:
             return
 
-        self.last_scan_time = (
-            self.get_clock().now()
-        )
-
+        self.last_scan_time = self.get_clock().now()
         self.timeout_triggered = False
 
         current_ranges = np.array(
-            msg.ranges[
-                self.roi_start:self.roi_end + 1
-            ],
+            msg.ranges[self.roi_start:self.roi_end + 1],
             dtype=float
         )
 
-        current_ranges[np.isinf(current_ranges)] = (
-            msg.range_max
-        )
-
+        current_ranges[np.isinf(current_ranges)] = msg.range_max
         current_ranges[np.isnan(current_ranges)] = 0.0
 
         if len(current_ranges) < 50:
-
             self.last_valid_angle = float('nan')
-
             self.t_junction_count = 0
-
-            self.publish_nan(
-                'ROI data too short → STOP',
-                status='ERROR'
-            )
-
+            self.publish_nan('ROI data too short → STOP', status='ERROR')
             return
 
         try:
-
-            # ==================================
-            # FILTERING
-            # ==================================
             smooth_signal = savgol_filter(
                 current_ranges,
                 self.sg_framelen,
@@ -256,13 +141,8 @@ class WeldDetectorMedian(Node):
                 mode='nearest'
             )
 
-            flattened_signal = (
-                background - smooth_signal
-            )
+            flattened_signal = background - smooth_signal
 
-            # ==================================
-            # PEAK DETECTION
-            # ==================================
             peaks, properties = find_peaks(
                 flattened_signal,
                 prominence=self.min_prominence,
@@ -270,77 +150,47 @@ class WeldDetectorMedian(Node):
             )
 
             found_weld = False
-
             best_angle = float('nan')
 
             if len(peaks) > 0:
+                prominences = properties['prominences']
+                widths = properties['widths']
 
-                prominences = properties[
-                    'prominences'
-                ]
+                sorted_indices = np.argsort(prominences)[::-1]
 
-                widths = properties[
-                    'widths'
-                ]
-
-                sorted_indices = np.argsort(
-                    prominences
-                )[::-1]
-
-                # ==================================
-                # T-JUNCTION DETECTION
-                # ==================================
+                # ==============================
+                # T-JUNCTION CHECK FIRST
+                # ==============================
                 if len(sorted_indices) >= 2:
-
                     idx1 = sorted_indices[0]
-
                     idx2 = sorted_indices[1]
 
-                    top1 = prominences[idx1]
+                    top1 = float(prominences[idx1])
+                    top2 = float(prominences[idx2])
 
-                    top2 = prominences[idx2]
+                    peak1 = int(peaks[idx1])
+                    peak2 = int(peaks[idx2])
 
-                    peak1 = peaks[idx1]
+                    peak_separation = abs(peak1 - peak2)
+                    ratio = top2 / top1 if top1 > 0.0 else 0.0
 
-                    peak2 = peaks[idx2]
-
-                    peak_separation = abs(
-                        peak1 - peak2
-                    )
-
-                    ratio_valid = (
-                        top1 > 0.0 and
-                        top2 > (
-                            self.t_junction_ratio * top1
-                        )
-                    )
-
+                    ratio_valid = ratio >= self.t_junction_ratio
                     separation_valid = (
-                        peak_separation >=
-                        self.t_junction_min_separation
+                        peak_separation >= self.t_junction_min_separation
                     )
-
                     prominence_valid = (
-                        top1 >=
-                        self.t_junction_min_prominence
-                        and
-                        top2 >=
-                        self.t_junction_min_prominence
+                        top1 >= self.t_junction_min_prominence and
+                        top2 >= self.t_junction_min_prominence
                     )
 
                     self.get_logger().warn(
                         f'T1={top1:.4f} | '
                         f'T2={top2:.4f} | '
-                        f'Ratio={top2/top1:.2f} | '
+                        f'Ratio={ratio:.2f} | '
                         f'Sep={peak_separation}'
                     )
 
-                    if (
-                        ratio_valid and
-                        separation_valid and
-                        prominence_valid
-                    ):
-
+                    if ratio_valid and separation_valid and prominence_valid:
                         self.t_junction_count += 1
 
                         self.get_logger().warn(
@@ -349,16 +199,8 @@ class WeldDetectorMedian(Node):
                             f'{self.t_junction_confirm_threshold})'
                         )
 
-                        # CONFIRMED
-                        if (
-                            self.t_junction_count >=
-                            self.t_junction_confirm_threshold
-                        ):
-
-                            self.last_valid_angle = (
-                                float('nan')
-                            )
-
+                        if self.t_junction_count >= self.t_junction_confirm_threshold:
+                            self.last_valid_angle = float('nan')
                             self.missed_count = 0
 
                             self.publish_nan(
@@ -371,54 +213,31 @@ class WeldDetectorMedian(Node):
                             self.system_stopped = True
 
                             self.get_logger().warn(
-                                'T-junction confirmed. '
-                                'Weld detector stopped.'
+                                'T-junction confirmed. Weld detector stopped.'
                             )
-
                             return
-
                     else:
                         self.t_junction_count = 0
-
                 else:
                     self.t_junction_count = 0
 
-                # ==================================
+                # ==============================
                 # NORMAL WELD DETECTION
-                # ==================================
-                num_candidates = min(
-                    len(sorted_indices),
-                    3
-                )
+                # ==============================
+                num_candidates = min(len(sorted_indices), 3)
 
                 for k in range(num_candidates):
-
                     idx = sorted_indices[k]
 
-                    local_idx = int(
-                        peaks[idx]
-                    )
+                    local_idx = int(peaks[idx])
+                    current_width = float(widths[idx])
 
-                    current_width = float(
-                        widths[idx]
-                    )
+                    global_idx = self.roi_start + local_idx
 
-                    current_height = float(
-                        flattened_signal[
-                            local_idx
-                        ]
-                    )
-
-                    global_idx = (
-                        self.roi_start + local_idx
-                    )
-
-                    current_angle = (
-                        self.index_to_angle(
-                            global_idx,
-                            msg.angle_min,
-                            msg.angle_increment
-                        )
+                    current_angle = self.index_to_angle(
+                        global_idx,
+                        msg.angle_min,
+                        msg.angle_increment
                     )
 
                     loc_valid = self.is_valid_weld(
@@ -426,78 +245,39 @@ class WeldDetectorMedian(Node):
                         self.last_valid_angle
                     )
 
-                    height_valid = (
-                        current_height >=
-                        self.min_height_threshold
-                    )
-
-                    if (
-                        current_width <=
-                        self.max_width
-                    ) and loc_valid and height_valid:
-
+                    if current_width <= self.max_width and loc_valid:
                         found_weld = True
-
                         best_angle = current_angle
-
-                        self.last_valid_angle = (
-                            best_angle
-                        )
-
+                        self.last_valid_angle = best_angle
                         self.missed_count = 0
-
                         self.t_junction_count = 0
-
                         break
 
-            # ==================================
-            # NO WELD
-            # ==================================
             if not found_weld:
-
                 self.missed_count += 1
 
-                if (
-                    self.missed_count >=
-                    self.reset_threshold
-                ):
-
-                    self.last_valid_angle = (
-                        float('nan')
-                    )
-
+                if self.missed_count >= self.reset_threshold:
+                    self.last_valid_angle = float('nan')
                     self.missed_count = 0
 
                 self.publish_nan(
                     'No valid weld detected → STOP',
                     status='NO_WELD'
                 )
-
                 return
 
-            # ==================================
-            # PUBLISH WELD
-            # ==================================
             self.get_logger().info(
-                f'Weld Found. '
-                f'Angle: '
-                f'{math.degrees(best_angle):.2f} deg'
+                f'Weld Found. Angle: {math.degrees(best_angle):.2f} deg'
             )
 
-            self.publish_status(
-                'WELD_FOUND'
-            )
+            self.publish_status('WELD_FOUND')
 
             msg_out = Float32()
-
             msg_out.data = float(best_angle)
-
             self.angle_pub.publish(msg_out)
 
         except Exception as e:
-
             self.last_valid_angle = float('nan')
-
             self.t_junction_count = 0
 
             self.publish_nan(
@@ -505,25 +285,17 @@ class WeldDetectorMedian(Node):
                 status='ERROR'
             )
 
-# ==========================================
-# MAIN
-# ==========================================
+
 def main(args=None):
-
     rclpy.init(args=args)
-
     node = WeldDetectorMedian()
 
     try:
         rclpy.spin(node)
-
     except KeyboardInterrupt:
         pass
-
     finally:
-
         node.destroy_node()
-
         rclpy.shutdown()
 
 

@@ -10,21 +10,28 @@ class SeamTrackerPID(Node):
     def __init__(self):
         super().__init__('seam_tracker_pid')
 
+        # ==============================
+        # MODE SELECT
+        # False = ใช้บนกระดาษ / พื้นราบ
+        # True  = ใช้บนถัง / แผ่นเหล็กจริง
+        # ==============================
+        self.tank_mode = False
+
         # PID gains
         self.kp = 0.15
         self.ki = 0.0
         self.kd = 0.0
 
         # Motion settings
-        self.max_linear_speed = 0.015
+        self.max_linear_speed = 0.020
         self.min_linear_speed = 0.005
-        self.max_turn_speed = 0.04
+        self.max_turn_speed = 0.012
         self.stop_angle_rad = math.radians(12.0)
 
-        # Deadband กันยึกยักใกล้เส้นกลาง
-        self.deadband_rad = math.radians(1.0)
+        # Deadband
+        self.deadband_rad = math.radians(2.0)
 
-        # Low-pass filter สำหรับ best_angle
+        # Low-pass filter
         self.filter_alpha = 0.35
         self.filtered_error = None
 
@@ -72,6 +79,10 @@ class SeamTrackerPID(Node):
         if dt > self.angle_timeout:
             self.stop_robot()
 
+    # ==============================
+    # PAPER / FLAT FLOOR MODE
+    # error เยอะ -> ลด linear
+    # ==============================
     def calculate_linear_speed(self, error):
         error_abs = abs(error)
 
@@ -82,6 +93,18 @@ class SeamTrackerPID(Node):
         speed = self.max_linear_speed * (1.0 - ratio) ** 2
 
         return max(speed, self.min_linear_speed)
+
+    # ==============================
+    # TANK MODE
+    # linear คงที่ เพื่อให้มีแรงประคอง
+    # ==============================
+    def calculate_linear_speed_tank(self, error):
+        error_abs = abs(error)
+
+        if error_abs >= self.stop_angle_rad:
+            return 0.0
+
+        return self.min_linear_speed
 
     def reset_filter(self):
         self.filtered_error = None
@@ -143,6 +166,7 @@ class SeamTrackerPID(Node):
 
         self.integral += error * dt
         self.integral = max(min(self.integral, 1.0), -1.0)
+
         i = self.ki * self.integral
 
         derivative = (error - self.previous_error) / dt
@@ -157,9 +181,7 @@ class SeamTrackerPID(Node):
         )
 
         # ==============================
-        # IMPORTANT: raw_error brake
-        # ถ้า raw angle ตรงพอแล้ว ให้หยุดหมุนทันที
-        # กัน filtered_error หน่วงแล้วพาหุ่นหันเลย
+        # RAW / FILTERED DEADBAND BRAKE
         # ==============================
         raw_in_deadband = abs(raw_error) < self.deadband_rad
         filtered_in_deadband = abs(error) < self.deadband_rad
@@ -172,13 +194,23 @@ class SeamTrackerPID(Node):
             self.previous_error = error
 
         # ==============================
-        # LINEAR SPEED
+        # LINEAR SPEED MODE
         # ==============================
-        linear_speed = self.calculate_linear_speed(error)
+        if self.tank_mode:
+            linear_speed = self.calculate_linear_speed_tank(error)
+        else:
+            linear_speed = self.calculate_linear_speed(error)
 
-        # ถ้าตรงพอแล้ว ให้เดินตรงช้าๆ
+        # ถ้าตรงพอแล้ว ให้เดินหน้าด้วย max speed บนกระดาษ
+        # แต่บนถังให้ใช้ min speed คงที่ต่อไปเพื่อกันพุ่ง
         if raw_in_deadband or filtered_in_deadband:
-            linear_speed = self.max_linear_speed
+            if self.tank_mode:
+                linear_speed = self.min_linear_speed
+            else:
+                linear_speed = self.max_linear_speed
+
+        # กันติดลบ
+        linear_speed = max(0.0, linear_speed)
 
         # ==============================
         # PUBLISH
@@ -189,7 +221,10 @@ class SeamTrackerPID(Node):
 
         self.cmd_vel_publisher.publish(twist_msg)
 
+        mode_name = 'TANK' if self.tank_mode else 'PAPER'
+
         self.get_logger().info(
+            f'mode={mode_name} | '
             f'raw={math.degrees(raw_error):.2f} deg | '
             f'filtered={math.degrees(error):.2f} deg | '
             f'linear={linear_speed:.3f} | '
