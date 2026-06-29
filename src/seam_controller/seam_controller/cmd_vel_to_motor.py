@@ -13,14 +13,14 @@ class CmdVelToMotorClosedLoop(Node):
     def __init__(self):
         super().__init__("cmd_vel_to_motor")
         self.wheel_base = 0.30
-        self.wheel_radius = 0.0365
+        self.wheel_radius = 0.0295
         self.ticks_per_rev = 200
-        self.max_wheel_speed = 0.13
+        self.max_wheel_speed = 0.16
         self.min_pwm = 0.0
         self.cmd_timeout = 0.5
-        self.kp = 0.5
-        self.ki = 0.01
-        self.integ_limit = 0.2
+        self.kp = 0.6
+        self.ki = 0.03
+        self.integ_limit = 0.15
         self.alpha = 0.7
         self.speed_dt = 0.2
         self.last_cmd_time = time.time()
@@ -32,6 +32,8 @@ class CmdVelToMotorClosedLoop(Node):
         self.dir_l = True
         self.ticks_r = 0
         self.ticks_l = 0
+        self.dist_r = 0
+        self.dist_l = 0
         self.pt_r = None
         self.ptime_r = None
         self.speed_r = 0.0
@@ -54,7 +56,7 @@ class CmdVelToMotorClosedLoop(Node):
         ts = time.strftime("%Y%m%d_%H%M%S")
         self.f = open(f"logs/log_{ts}.csv", "w", newline="")
         self.w = csv.writer(self.f)
-        self.w.writerow(["t","vx","wz","target_r","target_l","speed_r","speed_l","err_r","err_l","ticks_r","ticks_l","angle","weld"])
+        self.w.writerow(["t","vx","wz","target_r","target_l","speed_r","speed_l","err_r","err_l","ticks_r","ticks_l","dist_r ","dist_l","angle","weld"])
         self.lpwm = PWMOutputDevice(18, frequency=1000, initial_value=0.0)
         self.ldir = DigitalOutputDevice(17, initial_value=False)
         self.rpwm = PWMOutputDevice(19, frequency=1000, initial_value=0.0)
@@ -176,11 +178,15 @@ class CmdVelToMotorClosedLoop(Node):
         self.pub_tl.publish(Int32(data=self.ticks_l))
         self.pub_sr.publish(Float32(data=float(self.speed_r)))
         self.pub_sl.publish(Float32(data=float(self.speed_l)))
+        dist_per_tick   = (2.0 * math.pi * self.wheel_radius) / self.ticks_per_rev
+        self.dist_r     = abs(self.ticks_r) * dist_per_tick
+        self.dist_l     = abs(self.ticks_l) * dist_per_tick
         self.log_counter += 1
         if self.log_counter >= 20:
             self.log_counter = 0
             self.get_logger().info(
-                f"R={self.speed_r:.4f} L={self.speed_l:.4f} "
+                f"spd R={self.speed_r:.3f} L={self.speed_l:.3f} m/s | "
+                f"dist R={self.dist_r:.3f} L={self.dist_l:.3f} m/s |"
                 f"pwm_r={pwm_r:.2f} pwm_l={pwm_l:.2f} "
             )
 
@@ -191,7 +197,7 @@ class CmdVelToMotorClosedLoop(Node):
         ang = math.degrees(self.best_angle) if not math.isnan(self.best_angle) else "nan"
         self.mae_r.append(abs(er))
         self.mae_l.append(abs(el))
-        self.w.writerow([round(t,3), self.cmd_vx, self.cmd_wz, self.target_r, self.target_l, round(self.speed_r,4), round(self.speed_l,4), round(er,4), round(el,4), self.ticks_r, self.ticks_l, ang, self.weld_status])
+        self.w.writerow([round(t,3), self.cmd_vx, self.cmd_wz, self.target_r, self.target_l, round(self.speed_r,4), round(self.speed_l,4), round(er,4), round(el,4), self.ticks_r, self.ticks_l, round(self.dist_r,4), round(self.dist_l,4), ang, self.weld_status])
         self.f.flush()
 
     def summary(self):
