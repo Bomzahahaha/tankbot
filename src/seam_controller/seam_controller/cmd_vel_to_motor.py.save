@@ -18,39 +18,65 @@ class CmdVelToMotorClosedLoop(Node):
         self.wheel_radius = 0.0295  # Calibrated 29.5 mm
         self.ticks_per_rev = 200
         
-        # --- Parameters ที่พิสูจน์แล้วว่านิ่ง (ก่อนปรับเลี้ยว) ---
-        self.max_wheel_speed = 0.18 
+        # --- Individual Feedforward (แก้ล้อซ้ายอืดกว่าขวา) ---
+        self.max_wheel_speed_r = 0.15  # ล้อขวาแรงดี (18 cm/s)
+        self.max_wheel_speed_l = 0.15  # ล้อซ้ายอืดกว่า (15 cm/s) เพื่อให้ PWM ตั้งต้นสูงกว่า
+        
+
+
         self.cmd_timeout = 0.5
         self.speed_dt = 0.2
-        self.alpha = 0.8
+        self.alpha = 0.8  # EMA Filter (0.0 - 1.0)
         
-        # --- PID Gains ชุดที่รันตรงได้ดีที่สุด ---
-        self.kp = 0.4
-        self.ki = 0.015
-        self.integ_limit = 0.2
+        # --- Independent PID Gains (แยกซ้าย-ขวา) ---
+        # ล้อขวา (นิ่งแล้ว)
+        self.kp_r = 0.40
+        self.ki_r = 0.02
+        
+        # ล้อซ้าย (ดุขึ้นเพื่อชดเชยความฝืด)
+        self.kp_l = 0.55
+        self.ki_l = 0.06
+        
+        self.integ_limit = 0.3
         
         # --- ตัวแปรภายใน ---
         self.last_cmd_time = time.time()
-        self.target_r = 0.0; self.target_l = 0.0
-        self.dir_r = True; self.dir_l = True
-        self.ticks_r = 0; self.ticks_l = 0
-        self.dist_r = 0.0; self.dist_l = 0.0
+        self.target_r = 0.0
+        self.target_l = 0.0
+        self.dir_r = True
+        self.dir_l = True
+        self.ticks_r = 0
+        self.ticks_l = 0
+        self.dist_r = 0.0
+        self.dist_l = 0.0
         
-        self.pt_r = None; self.ptime_r = None; self.speed_r = 0.0; self.integ_r = 0.0
-        self.pt_l = None; self.ptime_l = None; self.speed_l = 0.0; self.integ_l = 0.0
+        self.pt_r = None
+        self.ptime_r = None
+        self.speed_r = 0.0
+        self.integ_r = 0.0
+        
+        self.pt_l = None
+        self.ptime_l = None
+        self.speed_l = 0.0
+        self.integ_l = 0.0
         
         self.t0 = time.time()
         self.log_counter = 0
-        self.cmd_vx = 0.0; self.cmd_wz = 0.0
-        self.best_angle = float("nan"); self.weld_status = "UNKNOWN"
-        self.mae_r = []; self.mae_l = []
-        self.offset_r = None; self.offset_l = None
+        self.cmd_vx = 0.0
+        self.cmd_wz = 0.0
+        self.best_angle = float("nan")
+        self.weld_status = "UNKNOWN"
+        self.mae_r = []
+        self.mae_l = []
+        self.offset_r = None
+        self.offset_l = None
         
         # --- Logger Setup ---
         os.makedirs("logs", exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         self.f = open(f"logs/log_{ts}.csv", "w", newline="")
         self.w = csv.writer(self.f)
+        # เพิ่ม dist_r, dist_l ใน Header
         self.w.writerow(["t","vx","wz","target_r","target_l","speed_r","speed_l","err_r","err_l","ticks_r","ticks_l","dist_r","dist_l","angle","weld"])
         
         # --- Hardware Setup ---
@@ -63,19 +89,22 @@ class CmdVelToMotorClosedLoop(Node):
         try:
             self.ser = serial.Serial("/dev/ttyUSB0", 115200, timeout=0.01)
             time.sleep(2.0)
-            self.get_logger().info("✅ Arduino connected")
+            self.get_logger().info("✅ Arduino Connected & Ready")
         except Exception as e:
-            self.get_logger().warn(f"Serial failed: {e}")
+            self.get_logger().warn(f"❌ Serial failed: {e}")
             
+        # --- ROS 2 Communication ---
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd, 10)
         self.create_subscription(Float32, "/best_angle", self.on_angle, 10)
         self.create_subscription(String, "/weld_status", self.on_weld, 10)
+        
         self.pub_sr = self.create_publisher(Float32, "/right_wheel_speed", 10)
         self.pub_sl = self.create_publisher(Float32, "/left_wheel_speed", 10)
         
         self.create_timer(0.01, self.read_serial)
         self.create_timer(0.05, self.control_loop)
         self.create_timer(0.05, self.log_data)
+        self.get_logger().info("🚀 TankBot Control Node Started")
 
     def read_serial(self):
         if not self.ser: return
@@ -94,15 +123,18 @@ class CmdVelToMotorClosedLoop(Node):
                         if self.offset_l is None: self.offset_l = raw
                         self.ticks_l = raw - self.offset_l
         except Exception as e:
-            self.get_logger().warn(f"Serial: {e}")
+            self.get_logger().warn(f"Serial Error: {e}")
 
     def on_cmd(self, msg):
         self.last_cmd_time = time.time()
         self.cmd_vx = msg.linear.x
         self.cmd_wz = msg.angular.z
-        v, w = msg.linear.x, msg.angular.z
-        self.target_r = v + w * self.wheel_base / 2.0
-        self.target_l = v - w * self.wheel_base / 2.0
+        
+        # Kinematics: แปลงรวมเป็นแยก
+        self.target_r = msg.linear.x + (msg.angular.z * self.wheel_base / 2.0)
+        self.target_l = msg.linear.x - (msg.angular.z * self.wheel_base / 2.0)
+        
+        # กำหนดทิศทาง
         self.dir_r = self.target_r >= 0.0
         self.dir_l = self.target_l >= 0.0
 
@@ -114,65 +146,81 @@ class CmdVelToMotorClosedLoop(Node):
         if pt is None: return 0.0, ticks, now
         dt = now - ptime
         if dt < self.speed_dt: return spd, pt, ptime
+        
         delta = ticks - pt
         if delta == 0:
-            spd = spd * 0.8
+            spd = spd * 0.8 # ค่อยๆ ลดความเร็วถ้าล้อหยุด
             if abs(spd) < 0.001: spd = 0.0
             return spd, ticks, now
-        dist = (delta / self.ticks_per_rev) * 2.0 * math.pi * self.wheel_radius
+            
+        dist = delta / self.ticks_per_rev * 2.0 * math.pi * self.wheel_radius
         raw = dist / dt
         spd = self.alpha * spd + (1.0 - self.alpha) * raw
         return spd, ticks, now
 
     def control_loop(self):
+        # 1. คำนวณความเร็วปัจจุบัน
         self.speed_r, self.pt_r, self.ptime_r = self.calc_speed(self.ticks_r, self.pt_r, self.ptime_r, self.speed_r)
         self.speed_l, self.pt_l, self.ptime_l = self.calc_speed(self.ticks_l, self.pt_l, self.ptime_l, self.speed_l)
         
+        # 2. คำนวณระยะทางรวม (เมตร)
         dist_per_tick = (2.0 * math.pi * self.wheel_radius) / self.ticks_per_rev
         self.dist_r = abs(self.ticks_r) * dist_per_tick
         self.dist_l = abs(self.ticks_l) * dist_per_tick
 
+        # 3. ตรวจสอบ Timeout (ถ้าไม่มีคำสั่งให้หยุด)
         if time.time() - self.last_cmd_time > self.cmd_timeout:
             self.target_r = self.target_l = 0.0
             self.integ_r = self.integ_l = 0.0
 
-        # PID Right
+        # 4. PID ล้อขวา
         if abs(self.target_r) < 1e-4:
-            pwm_r = 0.0; self.integ_r = 0.0
+            pwm_r = 0.0
+            self.integ_r = 0.0
         else:
             err_r = self.target_r - self.speed_r
             self.integ_r = max(-self.integ_limit, min(self.integ_r + err_r * self.speed_dt, self.integ_limit))
-            pwm_r = (abs(self.target_r) / self.max_wheel_speed) + (self.kp * err_r) + (self.ki * self.integ_r)
+            ff_r = abs(self.target_r) / self.max_wheel_speed_r
+            pwm_r = ff_r + (self.kp_r * err_r) + (self.ki_r * self.integ_r)
 
-        # PID Left
+        # 5. PID ล้อซ้าย
         if abs(self.target_l) < 1e-4:
-            pwm_l = 0.0; self.integ_l = 0.0
+            pwm_l = 0.0
+            self.integ_l = 0.0
         else:
             err_l = self.target_l - self.speed_l
             self.integ_l = max(-self.integ_limit, min(self.integ_l + err_l * self.speed_dt, self.integ_limit))
-            pwm_l = (abs(self.target_l) / self.max_wheel_speed) + (self.kp * err_l) + (self.ki * self.integ_l)
+            ff_l = abs(self.target_l) / self.max_wheel_speed_l
+            pwm_l = ff_l + (self.kp_l * err_l) + (self.ki_l * self.integ_l)
 
+        # 6. ส่ง PWM ออกฮาร์ดแวร์
         self.rpwm.value = max(0.0, min(pwm_r, 1.0))
         self.lpwm.value = max(0.0, min(pwm_l, 1.0))
-        self.rdir.value = not self.dir_r
+        self.rdir.value = not self.dir_r # กลับ Logic ตาม Driver
         self.ldir.value = self.dir_l
         
+        # 7. Publish ข้อมูลกลับเข้าระบบ
         self.pub_sr.publish(Float32(data=float(self.speed_r)))
         self.pub_sl.publish(Float32(data=float(self.speed_l)))
 
+        # 8. แสดงผล INFO ทุกๆ 1 วินาที (20 รอบ x 0.05s)
         self.log_counter += 1
         if self.log_counter >= 20:
             self.log_counter = 0
             self.get_logger().info(
-                f"Speed(cm/s): vR={self.speed_r*100:.1f} vL={self.speed_l*100:.1f} |"
-                f"dist(cm): dR={self.dist_r*100:.1f} dL={self.dist_l*100:.1f} |"
-                f"Target_Speed(cm/s): vdR={self.target_r*100:.1f} vdL={self.target_l*100:.1f} "
+                f"TGT(cm/s): R={self.target_r*100:.1f} L={self.target_l*100:.1f} | "
+                f"ACT(cm/s): R={self.speed_r*100:.1f} L={self.speed_l*100:.1f} | "
+                f"DIST(cm): R={self.dist_r*100:.1f} L={self.dist_l*100:.1f}"
             )
 
     def log_data(self):
         t = time.time() - self.t0
-        er = self.target_r - self.speed_r; el = self.target_l - self.speed_l
+        er = self.target_r - self.speed_r
+        el = self.target_l - self.speed_l
         ang = math.degrees(self.best_angle) if not math.isnan(self.best_angle) else "nan"
+        self.mae_r.append(abs(er))
+        self.mae_l.append(abs(el))
+        # บันทึกครบทุกอย่างรวมถึง distance
         self.w.writerow([round(t,3), self.cmd_vx, self.cmd_wz, self.target_r, self.target_l, round(self.speed_r,4), round(self.speed_l,4), round(er,4), round(el,4), self.ticks_r, self.ticks_l, round(self.dist_r,4), round(self.dist_l,4), ang, self.weld_status])
         self.f.flush()
 
@@ -180,9 +228,10 @@ class CmdVelToMotorClosedLoop(Node):
         try:
             self.rpwm.value = 0.0; self.lpwm.value = 0.0
             for d in [self.rpwm, self.lpwm, self.rdir, self.ldir]: d.close()
-            if self.ser: self.ser.close()
+            if self.ser and self.ser.is_open: self.ser.close()
             if not self.f.closed: self.f.close()
-        finally: super().destroy_node()
+        finally:
+            super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
@@ -191,7 +240,7 @@ def main(args=None):
     except KeyboardInterrupt: pass
     finally:
         node.destroy_node()
-        if rclpy.ok(): rclpy.shutdown()
+        rclpy.shutdown()
 
-if __name__ == "__main__":
+if __name__ == "_main_":
     main()
