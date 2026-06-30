@@ -15,12 +15,12 @@ class CmdVelToMotorClosedLoop(Node):
         self.wheel_base = 0.30
         self.wheel_radius = 0.0295
         self.ticks_per_rev = 200
-        self.max_wheel_speed = 0.16
+        self.max_wheel_speed = 0.19
         self.min_pwm = 0.0
         self.cmd_timeout = 0.5
-        self.kp = 0.6
-        self.ki = 0.03
-        self.integ_limit = 0.15
+        self.kp = 0.4
+        self.ki = 0.015
+        self.integ_limit = 0.1
         self.alpha = 0.7
         self.speed_dt = 0.2
         self.last_cmd_time = time.time()
@@ -185,9 +185,9 @@ class CmdVelToMotorClosedLoop(Node):
         if self.log_counter >= 20:
             self.log_counter = 0
             self.get_logger().info(
-                f"spd R={self.speed_r:.3f} L={self.speed_l:.3f} m/s | "
-                f"dist R={self.dist_r:.3f} L={self.dist_l:.3f} |"
-                f"pwm_r={pwm_r:.2f} pwm_l={pwm_l:.2f} "
+                f"Acctual Speed R={self.speed_r*100:.1f} L={self.speed_l*100:.1f} cm/s | "
+                f"Dist R={self.dist_r*100:.1f} L={self.dist_l*100:.1f} cm |"
+                f"Target Speed R={self.target_r*100:.1f} L={self.target_l*100:.1f} cm/s |"
             )
 
     def log_data(self):
