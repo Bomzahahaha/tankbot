@@ -27,8 +27,8 @@ class WeldDetectorMedian(Node):
         self.status_pub = self.create_publisher(String, '/weld_status', 10)
 
         # ROI
-        self.roi_start = 365 #330
-        self.roi_end = 415 #438
+        self.roi_start = 340 #330
+        self.roi_end = 460 #438
 
         # Filter parameters
         self.sg_order = 3
