@@ -74,7 +74,7 @@ class WeldDetectorMedian(Node):
         self.last_valid_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(6.0)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
 
         # ══════════════════════════════════════════
         # ANGLE HISTORY — median smooth 5 frames
@@ -92,6 +92,7 @@ class WeldDetectorMedian(Node):
         self.center_avg       = 0.093
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
+        self.heading_offset   = math.radians(6.0)
 
         # ══════════════════════════════════════════
         # TIMEOUT
