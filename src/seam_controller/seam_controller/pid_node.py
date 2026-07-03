@@ -18,21 +18,21 @@ class SeamTrackerPID(Node):
         self.tank_mode = False
 
         # PID gains
-        self.kp = 0.8
+        self.kp = 2.5
         self.ki = 0.01
-        self.kd = 0.02
+        self.kd = 0.15
 
         # Motion settings
-        self.max_linear_speed = 0.080
+        self.max_linear_speed = 0.035
         self.min_linear_speed = 0.005
-        self.max_turn_speed = 0.080
+        self.max_turn_speed = 0.30
         self.stop_angle_rad = math.radians(10.0)
 
         # Deadband
-        self.deadband_rad = math.radians(0.5)
+        self.deadband_rad = math.radians(0.2)
 
         # Low-pass filter
-        self.filter_alpha = 0.4
+        self.filter_alpha = 0.2
         self.filtered_error = None
 
         # Timeout

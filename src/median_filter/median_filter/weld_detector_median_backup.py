@@ -24,47 +24,51 @@ class WeldDetectorMedian(Node):
         self.angle_pub  = self.create_publisher(Float32, '/best_angle', 10)
         self.status_pub = self.create_publisher(String,  '/weld_status', 10)
 
-        # ── ROI ──────────────────────────────────────
-        self.roi_start = 385
-        self.roi_end   = 412   # 54 steps — ตัดหลุมขวาออก 375, 395
+        # ── ROI ──────────────────────────────────────────
+        self.roi_start = 355
+        self.roi_end   = 408   # 91 steps
 
-        # ── Filter ───────────────────────────────────
+        # ── Filter ───────────────────────────────────────
         self.sg_order    = 3
         self.sg_framelen = 7
-        self.med_window  = 11  # ต้องน้อยกว่า ROI (54)
+        self.med_window  = 31  # ต้องน้อยกว่า ROI (91)
 
-        # ── Peak ─────────────────────────────────────
-        self.min_prominence = 0.002
+        # ── Peak ─────────────────────────────────────────
+        self.min_prominence = 0.003
         self.max_width      = 20
 
-        # ── Tracking ─────────────────────────────────
+        # ── T-Junction ───────────────────────────────────
+        self.t_junction_ratio             = 0.6
+        self.t_junction_count             = 0
+        self.t_junction_confirm_threshold = 15
+        self.t_junction_min_separation    = 30
+        self.t_junction_min_prominence    = 0.005
+
+        # ── Tracking ─────────────────────────────────────
         self.last_valid_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 5
         self.angle_diff_threshold = math.radians(8.0)
 
-        # ── Angle history สำหรับ smooth ──────────────
-        self.angle_history   = []
-        self.history_size    = 5  # median ของ 5 frames
-
-        # ── Timeout ──────────────────────────────────
+        # ── Timeout ──────────────────────────────────────
         self.last_scan_time    = self.get_clock().now()
         self.scan_timeout_sec  = 3.0
         self.timer             = self.create_timer(0.5, self.check_scan_timeout)
         self.timeout_triggered = False
         self.system_stopped    = False
 
-        self.get_logger().info('Weld Detector Started (No T-Junction Mode).')
+        self.get_logger().info('Weld Detector (Median - Fixed) Started.')
 
+    # ─────────────────────────────────────────────────────
     def publish_status(self, status):
-        msg      = String()
+        msg = String()
         msg.data = status
         self.status_pub.publish(msg)
 
     def publish_nan(self, reason='', status='NO_WELD'):
-        out      = Float32()
-        out.data = float('nan')
-        self.angle_pub.publish(out)
+        msg_out = Float32()
+        msg_out.data = float('nan')
+        self.angle_pub.publish(msg_out)
         self.publish_status(status)
         if reason:
             self.get_logger().warn(reason)
@@ -76,12 +80,14 @@ class WeldDetectorMedian(Node):
         if dt > self.scan_timeout_sec and not self.timeout_triggered:
             self.last_valid_angle = float('nan')
             self.missed_count     = 0
+            self.t_junction_count = 0
             self.timeout_triggered = True
             self.publish_nan(f'No scan {dt:.1f}s', status='TIMEOUT')
 
     def index_to_angle(self, index, angle_min, angle_increment):
         return angle_min + index * angle_increment
 
+    # ─────────────────────────────────────────────────────
     def scan_callback(self, msg: LaserScan):
         if self.system_stopped:
             return
@@ -101,10 +107,10 @@ class WeldDetectorMedian(Node):
             return
 
         try:
-            # ── Signal Processing ─────────────────────
+            # ── Signal Processing ─────────────────────────
             smooth     = savgol_filter(raw, self.sg_framelen, self.sg_order)
             background = median_filter(smooth, size=self.med_window, mode='nearest')
-            signal     = background - smooth
+            signal     = background - smooth   # peak = นูนขึ้น
 
             peaks, props = find_peaks(
                 signal,
@@ -112,17 +118,43 @@ class WeldDetectorMedian(Node):
                 width=0
             )
 
-            if len(peaks) > 0:
+            # ── T-Junction Check ──────────────────────────
+            if len(peaks) >= 2:
                 prom = props['prominences']
                 si   = np.argsort(prom)[::-1]
-                self.get_logger().warn(
-                    f'TOP_PEAK={float(prom[si[0]]):.4f} | '
-                    f'num_peaks={len(peaks)}'
-                )
-            else:
-                self.get_logger().warn('NO_PEAKS_FOUND')
 
-            # ── Peak Selection ────────────────────────
+                top1  = float(prom[si[0]])
+                top2  = float(prom[si[1]])
+                sep   = abs(int(peaks[si[0]]) - int(peaks[si[1]]))
+                ratio = top2 / top1 if top1 > 0 else 0.0
+
+                self.get_logger().warn(
+                    f'T1={top1:.4f} | T2={top2:.4f} | '
+                    f'Ratio={ratio:.2f} | Sep={sep}'
+                )
+
+                if (ratio >= self.t_junction_ratio
+                        and sep   >= self.t_junction_min_separation
+                        and top1  >= self.t_junction_min_prominence
+                        and top2  >= self.t_junction_min_prominence):
+
+                    self.t_junction_count += 1
+                    self.get_logger().warn(
+                        f'Possible T-junction '
+                        f'({self.t_junction_count}/'
+                        f'{self.t_junction_confirm_threshold})'
+                    )
+                    if self.t_junction_count >= self.t_junction_confirm_threshold:
+                        self.system_stopped = True
+                        self.publish_nan('T-junction confirmed → STOP',
+                                         status='T_JUNCTION')
+                        return
+                else:
+                    self.t_junction_count = 0
+            else:
+                self.t_junction_count = 0
+
+            # ── Normal Weld Detection (แก้ใหม่ทั้งหมด) ───
             found_weld = False
             best_angle = float('nan')
 
@@ -130,7 +162,7 @@ class WeldDetectorMedian(Node):
                 prom   = props['prominences']
                 widths = props['widths']
 
-                # กรอง width ก่อน
+                # สร้าง candidate list กรอง width ก่อน
                 candidates = []
                 for i in range(len(peaks)):
                     if float(widths[i]) <= self.max_width:
@@ -148,43 +180,38 @@ class WeldDetectorMedian(Node):
 
                 if len(candidates) > 0:
                     if math.isnan(self.last_valid_angle):
-                        # ไม่มี history → เลือก prominence สูงสุด
+                        # ── ยังไม่มี history → เลือก prominence สูงสุด
                         candidates.sort(key=lambda x: x['prom'], reverse=True)
                         best_angle = candidates[0]['angle']
+
                     else:
-                        # มี history → เลือกที่ใกล้ last_valid_angle มากสุด
+                        # ── มี history → เลือกที่ใกล้ last_valid_angle มากสุด
                         candidates.sort(
                             key=lambda x: abs(x['angle'] - self.last_valid_angle)
                         )
-                        nearest      = candidates[0]
-                        nearest_diff = abs(nearest['angle'] - self.last_valid_angle)
+                        nearest       = candidates[0]
+                        nearest_diff  = abs(nearest['angle'] - self.last_valid_angle)
 
                         if nearest_diff < self.angle_diff_threshold:
                             best_angle = nearest['angle']
+                        # ถ้าทุก peak ไกลเกิน threshold → best_angle = nan
 
-            # ── Median Smooth ─────────────────────────
+            # ── ผล ───────────────────────────────────────
             if not math.isnan(best_angle):
-                self.angle_history.append(best_angle)
-                if len(self.angle_history) > self.history_size:
-                    self.angle_history.pop(0)
-
-                # ใช้ median ของ history แทน raw angle
-                smoothed_angle = float(np.median(self.angle_history))
-
                 found_weld            = True
-                self.last_valid_angle = best_angle  # track ด้วย raw
+                self.last_valid_angle = best_angle
                 self.missed_count     = 0
+                self.t_junction_count = 0
 
                 self.get_logger().info(
-                    f'Weld Found. Angle: {math.degrees(smoothed_angle):.2f} deg'
+                    f'Weld Found. Angle: {math.degrees(best_angle):.2f} deg'
                 )
                 self.publish_status('WELD_FOUND')
                 out      = Float32()
-                out.data = float(smoothed_angle)  # publish smoothed
+                out.data = float(best_angle)
                 self.angle_pub.publish(out)
 
             else:
-                self.angle_history = []  # reset history
                 self.missed_count += 1
                 if self.missed_count >= self.reset_threshold:
                     self.last_valid_angle = float('nan')
@@ -193,7 +220,7 @@ class WeldDetectorMedian(Node):
 
         except Exception as e:
             self.last_valid_angle = float('nan')
-            self.angle_history    = []
+            self.t_junction_count = 0
             self.publish_nan(f'Error: {e}', status='ERROR')
 
 
