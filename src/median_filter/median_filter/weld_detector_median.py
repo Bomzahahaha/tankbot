@@ -30,8 +30,8 @@ class WeldDetectorMedian(Node):
         # ปรับ roi_start/roi_end ให้ตรงกับ
         # ตำแหน่งเส้นจริงบนถัง
         # ══════════════════════════════════════════
-        self.roi_start = 330
-        self.roi_end   = 438   # 109 steps
+        self.roi_start = 313
+        self.roi_end   = 421   # 109 steps
 
         # ══════════════════════════════════════════
         # FILTER
@@ -73,8 +73,8 @@ class WeldDetectorMedian(Node):
         # ══════════════════════════════════════════
         self.last_valid_angle     = float('nan')
         self.missed_count         = 0
-        self.reset_threshold      = 5
-        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+        self.reset_threshold      = 10
+        self.angle_diff_threshold = math.radians(6.0)  # เข้มกว่าเดิมมาก
 
         # ══════════════════════════════════════════
         # ANGLE HISTORY — median smooth 5 frames
@@ -90,7 +90,7 @@ class WeldDetectorMedian(Node):
         # lateral_deadband: ±เท่านี้ไม่ต้องแก้
         # ══════════════════════════════════════════
         self.center_avg       = 0.093
-        self.lateral_scale    = 3.5
+        self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
 
         # ══════════════════════════════════════════
@@ -103,6 +103,8 @@ class WeldDetectorMedian(Node):
         self.system_stopped    = False
 
         self.get_logger().info('Weld Detector (Senior + Lateral) Started.')
+        #add on
+        self.last_known_angle = float('nan')
 
     # ════════════════════════════════════════════════
     # HELPERS
@@ -135,9 +137,9 @@ class WeldDetectorMedian(Node):
         return angle_min + index * angle_increment
 
     def is_valid_weld(self, current_angle, past_angle):
-        if math.isnan(past_angle):
+        if math.isnan(self.last_known_angle):
             return True
-        return abs(current_angle - past_angle) < self.angle_diff_threshold
+        return abs(current_angle - self.last_known_angle) < self.angle_diff_threshold
 
     # ════════════════════════════════════════════════
     # MAIN CALLBACK
@@ -274,6 +276,7 @@ class WeldDetectorMedian(Node):
                         found_weld            = True
                         best_angle            = current_angle
                         self.last_valid_angle = best_angle
+                        self.last_known_angle = best_angle
                         self.missed_count     = 0
                         self.t_junction_count = 0
                         break
@@ -296,9 +299,10 @@ class WeldDetectorMedian(Node):
                     f'out={math.degrees(smoothed):.2f} deg'
                 )
 
+                corrected = smoothed - self.heading_offset
                 self.publish_status('WELD_FOUND')
                 out      = Float32()
-                out.data = float(smoothed)
+                out.data = float(corrected)
                 self.angle_pub.publish(out)
 
             else:

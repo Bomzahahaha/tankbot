@@ -112,6 +112,11 @@ class CmdVelToMotorClosedLoop(Node):
         self.target_r = msg.linear.x + msg.angular.z * self.wheel_base / 2.0
         self.target_l = msg.linear.x - msg.angular.z * self.wheel_base / 2.0
 
+        if abs(self.target_r) < 1e-4:
+            self.integ_r = 0
+        if abs(self.target_l) < 1e-4:
+            self.integ_l = 0
+
     def on_angle(self, msg): self.best_angle  = msg.data
     def on_weld (self, msg): self.weld_status = msg.data
 
@@ -183,7 +188,7 @@ class CmdVelToMotorClosedLoop(Node):
         # direction แยกออกมาต่างหาก
         self.rdir.value = self.target_r < 0.0
         self.ldir.value = self.target_l >= 0.0
-        
+
         # 6. ส่ง PWM ออก Hardware
         self.rpwm.value = max(0.0, min(pwm_r, 1.0))
         self.lpwm.value = max(0.0, min(pwm_l, 1.0))
