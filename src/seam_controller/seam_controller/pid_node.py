@@ -19,7 +19,7 @@ class SeamTrackerPID(Node):
 
         # PID gains
         self.kp = 2.5
-        self.ki = 0.01
+        self.ki = 0.0
         self.kd = 0.15
 
         # Motion settings
