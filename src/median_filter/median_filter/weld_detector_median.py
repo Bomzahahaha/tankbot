@@ -41,8 +41,8 @@ class WeldDetectorMedian(Node):
         # med_window ต้องน้อยกว่า roi size
         # ══════════════════════════════════════════
         self.sg_order    = 3
-        self.sg_framelen = 15   # smooth 7 จุดซ้าย-ขวา
-        self.med_window  = 51   # background window
+        self.sg_framelen = 11   # smooth 5 จุดซ้าย-ขวา
+        self.med_window  = 61   # background window
 
         # ══════════════════════════════════════════
         # PEAK PARAMETERS
@@ -50,31 +50,40 @@ class WeldDetectorMedian(Node):
         # min_height:     peak ต้องสูงเท่าไหร่
         # max_width:      peak กว้างได้ไม่เกินนี้
         # ══════════════════════════════════════════
-        self.min_prominence       = 0.002
-        self.min_height_threshold = 0.004
-        self.max_width            = 60
-
-        # ══════════════════════════════════════════
-        # T-JUNCTION
-        # ratio: peak2/peak1 ต้องสูงกว่านี้
-        # separation: สองpeak ต้องห่างกันเท่าไหร่
-        # confirm_threshold: ยืนยันกี่ frame
-        # ══════════════════════════════════════════
-        self.t_junction_ratio             = 0.85
-        self.t_junction_count             = 0
-        self.t_junction_confirm_threshold = 10
-        self.t_junction_min_separation    = 25
-        self.t_junction_min_prominence    = 0.008
+        self.min_prominence       = 0.0015
+        self.min_height_threshold = 0.0035
+        self.max_width            = 40
 
         # ══════════════════════════════════════════
         # TRACKING
         # angle_diff_threshold: กัน angle กระโดด
         # reset_threshold: miss กี่ frame ค่อย reset
+        # last_known_angle: มุม confirm ล่าสุด ใช้เทียบกัน
+        #   single-frame กระโดด เคลียร์ทิ้งเป็น nan เมื่อหลุด
+        #   นานพอ (reset_threshold/timeout/error) เพื่อเปิด
+        #   gate ใหม่ให้ล็อกใหม่ได้อิสระ (ไม่ค้างเป็นค่าเก่าตลอดไป)
         # ══════════════════════════════════════════
         self.last_valid_angle     = float('nan')
+        self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
         self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+
+        # ══════════════════════════════════════════
+        # RE-LOCK CONFIRMATION GATE (ใหม่)
+        # ป้องกันการ "ล็อกผิดจุด" ตอนเริ่มต้น หรือตอน
+        # กลับมาจับใหม่หลัง NO_WELD — เดิมพอ
+        # last_known_angle เป็น nan ระบบจะเชื่อ peak
+        # แรกที่เจอทันที ถ้า peak นั้นไม่ใช่รอยเชื่อมจริง
+        # (เช่น noise/ขอบชิ้นงาน) จะล็อกผิดค้างไปยาว
+        # เพราะ angle_diff_threshold กันไม่ให้กลับไปหา
+        # ตัวจริงได้อีก ตอนนี้ต้องเห็นมุมนิ่งซ้ำกัน
+        # relock_confirm_threshold เฟรมก่อน ถึงจะยอมล็อกจริง
+        # ══════════════════════════════════════════
+        self.relock_candidate_angle   = float('nan')
+        self.relock_candidate_count   = 0
+        self.relock_confirm_threshold = 5
+        self.relock_tolerance         = math.radians(2.0)
 
         # ══════════════════════════════════════════
         # ANGLE HISTORY — median smooth 5 frames
@@ -92,7 +101,7 @@ class WeldDetectorMedian(Node):
         self.center_avg       = 0.093
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
-        self.heading_offset   = math.radians(6.0)
+        self.heading_offset   = math.radians(0.0)
 
         # ══════════════════════════════════════════
         # TIMEOUT
@@ -101,11 +110,8 @@ class WeldDetectorMedian(Node):
         self.scan_timeout_sec  = 3.0
         self.timer             = self.create_timer(0.5, self.check_scan_timeout)
         self.timeout_triggered = False
-        self.system_stopped    = False
 
-        self.get_logger().info('Weld Detector (Senior + Lateral) Started.')
-        #add on
-        self.last_known_angle = float('nan')
+        self.get_logger().info('Weld Detector (Senior + Lateral + Re-lock Gate) Started.')
 
     # ════════════════════════════════════════════════
     # HELPERS
@@ -123,21 +129,27 @@ class WeldDetectorMedian(Node):
         if reason:
             self.get_logger().warn(reason)
 
+    def reset_relock_gate(self):
+        # เรียกทุกครั้งที่ last_known_angle ถูกล้างเป็น nan
+        # เพื่อให้รอบต่อไปเริ่มยืนยันมุมใหม่ตั้งแต่ศูนย์
+        # ไม่ใช้ candidate เก่าที่อาจค้างมาจากนานแล้ว
+        self.relock_candidate_angle = float('nan')
+        self.relock_candidate_count = 0
+
     def check_scan_timeout(self):
-        if self.system_stopped:
-            return
         dt = (self.get_clock().now() - self.last_scan_time).nanoseconds / 1e9
         if dt > self.scan_timeout_sec and not self.timeout_triggered:
-            self.last_valid_angle = float('nan')
-            self.missed_count     = 0
-            self.t_junction_count = 0
+            self.last_valid_angle  = float('nan')
+            self.last_known_angle  = float('nan')
+            self.missed_count      = 0
+            self.reset_relock_gate()
             self.timeout_triggered = True
             self.publish_nan(f'No scan {dt:.1f}s', status='TIMEOUT')
 
     def index_to_angle(self, index, angle_min, angle_increment):
         return angle_min + index * angle_increment
 
-    def is_valid_weld(self, current_angle, past_angle):
+    def is_valid_weld(self, current_angle):
         if math.isnan(self.last_known_angle):
             return True
         return abs(current_angle - self.last_known_angle) < self.angle_diff_threshold
@@ -146,9 +158,6 @@ class WeldDetectorMedian(Node):
     # MAIN CALLBACK
     # ════════════════════════════════════════════════
     def scan_callback(self, msg: LaserScan):
-
-        if self.system_stopped:
-            return
 
         self.last_scan_time    = self.get_clock().now()
         self.timeout_triggered = False
@@ -203,6 +212,10 @@ class WeldDetectorMedian(Node):
             found_weld = False
             best_angle = float('nan')
 
+            # เก็บสถานะว่า "ก่อนเฟรมนี้" ล็อกอยู่หรือยัง
+            # ใช้ตัดสินว่าต้องผ่าน re-lock gate ไหม
+            was_locked = not math.isnan(self.last_known_angle)
+
             if len(peaks) > 0:
                 prominences = props['prominences']
                 widths      = props['widths']
@@ -210,52 +223,7 @@ class WeldDetectorMedian(Node):
                 # เรียง peak จากโดดเด่นมากสุดไปน้อยสุด
                 sorted_idx = np.argsort(prominences)[::-1]
 
-                # ── Step 7: T-Junction Detection ─────
-                # ถ้าเจอ 2 peaks ใหญ่ใกล้กัน = T-junction
-                # หยุดหุ่น
-                if len(sorted_idx) >= 2:
-                    idx1 = sorted_idx[0]
-                    idx2 = sorted_idx[1]
-                    top1 = float(prominences[idx1])
-                    top2 = float(prominences[idx2])
-                    sep  = abs(int(peaks[idx1]) - int(peaks[idx2]))
-
-                    ratio_valid = (
-                        top1 > 0.0 and
-                        top2 >= self.t_junction_ratio * top1
-                    )
-                    sep_valid  = sep >= self.t_junction_min_separation
-                    prom_valid = (
-                        top1 >= self.t_junction_min_prominence and
-                        top2 >= self.t_junction_min_prominence
-                    )
-
-                    self.get_logger().warn(
-                        f'T1={top1:.4f} | T2={top2:.4f} | '
-                        f'Ratio={top2/top1:.2f} | Sep={sep}'
-                    )
-
-                    if ratio_valid and sep_valid and prom_valid:
-                        self.t_junction_count += 1
-                        self.get_logger().warn(
-                            f'Possible T-junction '
-                            f'({self.t_junction_count}/'
-                            f'{self.t_junction_confirm_threshold})'
-                        )
-                        if self.t_junction_count >= self.t_junction_confirm_threshold:
-                            self.system_stopped = True
-                            self.publish_nan(
-                                'T-junction confirmed → STOP',
-                                status='T_JUNCTION'
-                            )
-                            return
-                    else:
-                        self.t_junction_count = 0
-                else:
-                    self.t_junction_count = 0
-
-                # ── Step 8: Normal Weld Detection ────
-                # เลือก peak ที่ดีที่สุดจาก top 3
+                # ── Step 7: เลือก peak ที่ดีที่สุดจาก top 3 ─
                 # เช็ค width + angle_diff + height
                 for k in range(min(len(sorted_idx), 3)):
                     idx           = sorted_idx[k]
@@ -270,7 +238,7 @@ class WeldDetectorMedian(Node):
                         msg.angle_increment
                     )
 
-                    loc_valid    = self.is_valid_weld(current_angle, self.last_valid_angle)
+                    loc_valid    = self.is_valid_weld(current_angle)
                     height_valid = current_height >= self.min_height_threshold
 
                     if current_width <= self.max_width and loc_valid and height_valid:
@@ -279,10 +247,37 @@ class WeldDetectorMedian(Node):
                         self.last_valid_angle = best_angle
                         self.last_known_angle = best_angle
                         self.missed_count     = 0
-                        self.t_junction_count = 0
                         break
 
-            # ── Step 9: รวม heading + lateral ────────
+            # ── Step 7.5: Re-lock Confirmation Gate ──
+            # ถ้าเฟรมนี้เพิ่งจะ "ล็อกใหม่" (ก่อนหน้านี้ยังไม่
+            # ล็อกอยู่ / last_known_angle เป็น nan) ห้ามเชื่อ
+            # ทันทีจาก peak เดียว ต้องเห็นมุมนิ่งใกล้เคียงกัน
+            # ซ้ำ relock_confirm_threshold เฟรมก่อน ถึงจะปล่อย
+            # ให้ใช้งานจริง กันล็อกผิดจุดตอนเริ่มต้น/กลับมาใหม่
+            if found_weld and not was_locked:
+                if math.isnan(self.relock_candidate_angle):
+                    self.relock_candidate_angle = best_angle
+                    self.relock_candidate_count = 1
+                elif abs(best_angle - self.relock_candidate_angle) < self.relock_tolerance:
+                    self.relock_candidate_count += 1
+                else:
+                    # มุมกระโดด แปลว่ายังไม่นิ่ง เริ่มนับใหม่
+                    self.relock_candidate_angle = best_angle
+                    self.relock_candidate_count = 1
+
+                if self.relock_candidate_count < self.relock_confirm_threshold:
+                    # ยังยืนยันไม่พอ ยกเลิกการล็อกที่เพิ่งเกิด
+                    # เฟรมนี้ ให้นับเป็น "ยังไม่เจอ" ไปก่อน
+                    self.last_valid_angle = float('nan')
+                    self.last_known_angle = float('nan')
+                    found_weld            = False
+                    best_angle            = float('nan')
+                else:
+                    # ยืนยันครบแล้ว ปลดล็อกให้ใช้งานได้จริง
+                    self.reset_relock_gate()
+
+            # ── Step 8: รวม heading + lateral ────────
             if found_weld and not math.isnan(best_angle):
 
                 combined = best_angle + lateral_angle
@@ -307,18 +302,21 @@ class WeldDetectorMedian(Node):
                 self.angle_pub.publish(out)
 
             else:
-                # ── Step 10: No Weld ─────────────────
+                # ── Step 9: No Weld ──────────────────
                 self.angle_history = []
                 self.missed_count += 1
                 if self.missed_count >= self.reset_threshold:
-                    self.last_valid_angle = float('nan')
-                    self.missed_count     = 0
+                    self.last_valid_angle  = float('nan')
+                    self.last_known_angle  = float('nan')
+                    self.missed_count      = 0
+                    self.reset_relock_gate()
                 self.publish_nan('No valid weld', status='NO_WELD')
 
         except Exception as e:
-            self.last_valid_angle = float('nan')
-            self.t_junction_count = 0
-            self.angle_history    = []
+            self.last_valid_angle  = float('nan')
+            self.last_known_angle  = float('nan')
+            self.angle_history     = []
+            self.reset_relock_gate()
             self.publish_nan(f'Error: {e}', status='ERROR')
 
 

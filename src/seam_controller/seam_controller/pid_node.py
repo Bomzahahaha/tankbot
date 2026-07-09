@@ -37,10 +37,7 @@ class SeamTrackerPID(Node):
         # ── NO_WELD: หยุดถ้าไม่เจอเส้น 3 frames ─
         self.no_weld_count     = 0
         self.no_weld_threshold = 3
-
-        # ── T_JUNCTION: หยุดถาวร ─────────────────
-        self.t_junction_stopped = False
-        self.no_weld_stopped = False
+        self.no_weld_stopped   = False
 
         # ── PID state ────────────────────────────
         self.previous_error = 0.0
@@ -48,6 +45,10 @@ class SeamTrackerPID(Node):
 
         self.last_time       = self.get_clock().now()
         self.last_angle_time = self.get_clock().now()
+
+        #Slew-rate limiter
+        self.prev_angular_speed = 0.0
+        self.max_angular_step = 0.05
 
         # ── Subscribers ──────────────────────────
         self.angle_subscriber = self.create_subscription(
@@ -57,7 +58,7 @@ class SeamTrackerPID(Node):
             10
         )
 
-        # รับ weld_status แยก NO_WELD vs T_JUNCTION
+        # รับ weld_status เพื่อดู NO_WELD / WELD_FOUND
         self.status_subscriber = self.create_subscription(
             String,
             '/weld_status',
@@ -80,10 +81,11 @@ class SeamTrackerPID(Node):
         twist_msg.linear.x  = 0.0
         twist_msg.angular.z = 0.0
         self.cmd_vel_publisher.publish(twist_msg)
+        self.prev_angular_speed = 0.0
 
     # ── Timeout check ────────────────────────────
     def check_timeout(self):
-        if self.t_junction_stopped or self.no_weld_stopped:
+        if self.no_weld_stopped:
             self.stop_robot()
             return
         now = self.get_clock().now()
@@ -91,22 +93,11 @@ class SeamTrackerPID(Node):
         if dt > self.angle_timeout:
             self.stop_robot()
 
-    # ── Status callback — แยก T_JUNCTION ─────────
+    # ── Status callback ───────────────────────────
     def status_callback(self, msg: String):
         status = msg.data
 
-        if status == 'T_JUNCTION':
-            # หยุดถาวร ไม่ resume
-            self.t_junction_stopped = True
-            self.integral           = 0.0
-            self.previous_error     = 0.0
-            self.reset_filter()
-            self.stop_robot()
-            self.get_logger().warn(
-                'T-JUNCTION confirmed → STOP FOREVER'
-            )
-
-        elif status == 'WELD_FOUND':
+        if status == 'WELD_FOUND':
             self.no_weld_count   = 0
             self.no_weld_stopped = False  # ← reset ได้เมื่อเจอเส้น
 
@@ -130,8 +121,7 @@ class SeamTrackerPID(Node):
     # ── PID callback ─────────────────────────────
     def pid_callback(self, angle_msg: Float32):
 
-        # ถ้า T-junction หยุดถาวร
-        if self.t_junction_stopped or self.no_weld_stopped:
+        if self.no_weld_stopped:
             self.stop_robot()
             return
 
@@ -155,13 +145,7 @@ class SeamTrackerPID(Node):
                 self.reset_filter()
             return
 
-        # เพิ่มบนสุดของ pid_callback
-        if self.t_junction_stopped or self.no_weld_stopped:
-            self.stop_robot()
-            return
-
-        # reset no_weld ได้ก็ต่อเมื่อเจอเส้นอีกครั้ง
-         # ── Low-pass filter ───────────────────────
+        # ── Low-pass filter ───────────────────────
         if self.filtered_error is None:
             self.filtered_error = raw_error
         else:
@@ -195,6 +179,16 @@ class SeamTrackerPID(Node):
             -self.max_turn_speed
         )
 
+        angular_speed = max(
+            min(angular_speed, self.max_turn_speed),
+            -self.max_turn_speed
+        )
+
+        angular_speed = max(
+            min(angular_speed, self.prev_angular_speed + self.max_angular_step),
+            self.prev_angular_speed - self.max_angular_step
+        )
+
         # ── Deadband ──────────────────────────────
         raw_in_db      = abs(raw_error) < self.deadband_rad
         filtered_in_db = abs(error)     < self.deadband_rad
@@ -205,6 +199,8 @@ class SeamTrackerPID(Node):
             self.previous_error = 0.0
         else:
             self.previous_error = error
+
+        self.prev_angular_speed = angular_speed
 
         # ── Linear speed ──────────────────────────
         if self.tank_mode:
