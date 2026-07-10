@@ -51,7 +51,7 @@ class WeldDetectorMedian(Node):
         # min_height:     peak ต้องสูงเท่าไหร่
         # max_width:      peak กว้างได้ไม่เกินนี้
         # ══════════════════════════════════════════
-        self.min_prominence       = 0.0015
+        self.min_prominence       = 0.005
         self.min_height_threshold = 0.0035
         self.max_width            = 40
 
@@ -68,7 +68,7 @@ class WeldDetectorMedian(Node):
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(2.72)  # เข้มกว่าเดิมมาก
 
         # ══════════════════════════════════════════
         # RE-LOCK CONFIRMATION GATE
@@ -83,8 +83,8 @@ class WeldDetectorMedian(Node):
         # ══════════════════════════════════════════
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
-        self.relock_confirm_threshold = 5
-        self.relock_tolerance         = math.radians(3.0)
+        self.relock_confirm_threshold = 4
+        self.relock_tolerance         = math.radians(3.5)
 
         # ══════════════════════════════════════════
         # COAST — ประคองต่อด้วยมุมล่าสุดตอนหลุดสั้นๆ
