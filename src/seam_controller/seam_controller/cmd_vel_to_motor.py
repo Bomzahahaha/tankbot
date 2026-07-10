@@ -76,7 +76,7 @@ class CmdVelToMotorClosedLoop(Node):
 
         self.create_subscription(Twist,  "/cmd_vel",     self.on_cmd,   10)
         self.create_subscription(Float32,"/best_angle",  self.on_angle, 10)
-        self.create_subscription(Float32,"/raw_angle",  self.on_angle, 10)
+        self.create_subscription(Float32,"/raw_angle",  self.on_raw_angle, 10)
         self.create_subscription(String, "/weld_status", self.on_weld,  10)
         self.pub_sr = self.create_publisher(Float32, "/right_wheel_speed", 10)
         self.pub_sl = self.create_publisher(Float32, "/left_wheel_speed",  10)
