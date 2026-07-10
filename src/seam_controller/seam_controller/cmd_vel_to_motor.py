@@ -23,7 +23,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.max_spd_l = 0.22   # ล้อซ้าย kff
         self.pwm_offset_r = 0.05  # จาก min_pwm test
         self.pwm_offset_l = 0.07  # จาก min_pwm test
-        
+
         # --- PID แยกฝั่ง (Independent) ---
         self.kp_r = 3.0;  self.ki_r = 0.35
         self.kp_l = 3.5;  self.ki_l = 0.40
@@ -47,6 +47,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.log_counter = 0
         self.cmd_vx = self.cmd_wz = 0.0
         self.best_angle  = float("nan")
+        self.raw_angle  = float("nan")
         self.weld_status = "UNKNOWN"
 
         # --- Logger ---
@@ -57,7 +58,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.w.writerow(["t","vx","wz","tgt_r","tgt_l",
                          "spd_r","spd_l","err_r","err_l",
                          "ticks_r","ticks_l","dist_r","dist_l",
-                         "angle","weld"])
+                         "raw_angle","filtered_angle","error","weld"])
 
         # --- Hardware ---
         self.lpwm = PWMOutputDevice(18, frequency=1000, initial_value=0.0)
@@ -75,6 +76,7 @@ class CmdVelToMotorClosedLoop(Node):
 
         self.create_subscription(Twist,  "/cmd_vel",     self.on_cmd,   10)
         self.create_subscription(Float32,"/best_angle",  self.on_angle, 10)
+        self.create_subscription(Float32,"/raw_angle",  self.on_angle, 10)
         self.create_subscription(String, "/weld_status", self.on_weld,  10)
         self.pub_sr = self.create_publisher(Float32, "/right_wheel_speed", 10)
         self.pub_sl = self.create_publisher(Float32, "/left_wheel_speed",  10)
@@ -118,6 +120,7 @@ class CmdVelToMotorClosedLoop(Node):
             self.integ_l = 0
 
     def on_angle(self, msg): self.best_angle  = msg.data
+    def on_raw_angle(self, msg): self.raw_angle  = msg.data
     def on_weld (self, msg): self.weld_status = msg.data
 
     # =====================================================================
@@ -215,13 +218,15 @@ class CmdVelToMotorClosedLoop(Node):
         er = self.target_r - self.speed_r
         el = self.target_l - self.speed_l
         ang = math.degrees(self.best_angle) if not math.isnan(self.best_angle) else "nan"
+        raw_ang = math.degrees(self.raw_angle) if not math.isnan(self.raw_angle) else "nan"
+        err_ang = (raw_ang - ang) if (raw_ang != "nan" and ang != "nan") else "nan"
         self.w.writerow([round(t,3), self.cmd_vx, self.cmd_wz,
                          self.target_r, self.target_l,
                          round(self.speed_r,4), round(self.speed_l,4),
                          round(er,4), round(el,4),
                          self.ticks_r, self.ticks_l,
                          round(self.dist_r,4), round(self.dist_l,4),
-                         ang, self.weld_status])
+                         raw_ang,ang,err_ang, self.weld_status])
         self.f.flush()
 
     # =====================================================================
