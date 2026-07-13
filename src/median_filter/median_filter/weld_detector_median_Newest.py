@@ -32,7 +32,7 @@ class WeldDetectorMedian(Node):
         # ตำแหน่งเส้นจริงบนถัง
         # ══════════════════════════════════════════
         self.roi_start = 313
-        self.roi_end   = 421   # 109 steps 313, 421
+        self.roi_end   = 421   # 109 steps
 
         # ══════════════════════════════════════════
         # FILTER
@@ -42,8 +42,8 @@ class WeldDetectorMedian(Node):
         # med_window ต้องน้อยกว่า roi size
         # ══════════════════════════════════════════
         self.sg_order    = 3
-        self.sg_framelen = 11   # smooth 5 จุดซ้าย-ขวา
-        self.med_window  = 61   # background window
+        self.sg_framelen = 7    # smooth 3 จุดซ้าย-ขวา (จูนจาก grid search รอบ 2)
+        self.med_window  = 81   # background window (จูนจาก grid search รอบ 2)
 
         # ══════════════════════════════════════════
         # PEAK PARAMETERS
@@ -51,9 +51,9 @@ class WeldDetectorMedian(Node):
         # min_height:     peak ต้องสูงเท่าไหร่
         # max_width:      peak กว้างได้ไม่เกินนี้
         # ══════════════════════════════════════════
-        self.min_prominence       = 0.005
-        self.min_height_threshold = 0.0035
-        self.max_width            = 40
+        self.min_prominence       = 0.0015
+        self.min_height_threshold = 0.005
+        self.max_width            = 60   # จูนจาก grid search รอบ 2
 
         # ══════════════════════════════════════════
         # TRACKING
@@ -67,8 +67,8 @@ class WeldDetectorMedian(Node):
         self.last_valid_angle     = float('nan')
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
-        self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+        self.reset_threshold      = 5    # จูนจาก grid search รอบ 2
+        self.angle_diff_threshold = math.radians(5.0)  # จูนจาก full grid search รอบ 1
 
         # ══════════════════════════════════════════
         # RE-LOCK CONFIRMATION GATE
@@ -83,8 +83,8 @@ class WeldDetectorMedian(Node):
         # ══════════════════════════════════════════
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
-        self.relock_confirm_threshold = 4
-        self.relock_tolerance         = math.radians(3.0)
+        self.relock_confirm_threshold = 3     # จูนจาก full grid search รอบ 1
+        self.relock_tolerance         = math.radians(5.0)  # จูนจาก full grid search รอบ 1
 
         # ══════════════════════════════════════════
         # COAST — ประคองต่อด้วยมุมล่าสุดตอนหลุดสั้นๆ
@@ -96,7 +96,7 @@ class WeldDetectorMedian(Node):
         # จากการ coast ผิดจึงต่ำมาก
         # ══════════════════════════════════════════
         self.coast_count = 0
-        self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ปรับได้)
+        self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ยืนยันจาก full grid search รอบ 1)
 
         # ══════════════════════════════════════════
         # ANGLE HISTORY — median smooth 5 frames
@@ -115,9 +115,9 @@ class WeldDetectorMedian(Node):
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
         self.heading_offset   = math.radians(0.0)
-        self.exclusion_zone_global_idx = (0, 0)
+        self.exclusion_zone_global_idx = (334, 368)  # global index, มุม -11.34 ถึง -8.34 องศา
         # ══════════════════════════════════════════
-        # TIMEOUT1
+        # TIMEOUT
         # ══════════════════════════════════════════
         self.last_scan_time    = self.get_clock().now()
         self.scan_timeout_sec  = 3.0
@@ -217,6 +217,7 @@ class WeldDetectorMedian(Node):
             else:
                 lateral_angle = 0.0
 
+            # ── Step 6: Find Peaks ────────────────────
             excl_start, excl_end = self.exclusion_zone_global_idx
             excl_local_start = excl_start - self.roi_start
             excl_local_end = excl_end - self.roi_start
@@ -224,7 +225,6 @@ class WeldDetectorMedian(Node):
                 lo = max(0, excl_local_start)
                 hi = min(len(flattened), excl_local_end + 1)
                 flattened[lo:hi] = 0.0
-            # ── Step 6: Find Peaks ────────────────────
             # หา peak ที่โดดเด่นพอ
             peaks, props = find_peaks(
                 flattened,
@@ -273,36 +273,6 @@ class WeldDetectorMedian(Node):
                     raw_msg = Float32()
                     raw_msg.data = float(best_angle)
                     self.raw_angle_pub.publish(raw_msg)
-
-                # ── Step 7: เลือก peak ที่ดีที่สุดจาก top 3 ─
-                # เช็ค width + angle_diff + height
-                for k in range(min(len(sorted_idx), 3)):
-                    idx           = sorted_idx[k]
-                    local_idx     = int(peaks[idx])
-                    current_width  = float(widths[idx])
-                    current_height = float(flattened[local_idx])
-                    global_idx    = self.roi_start + local_idx
-
-                    current_angle = self.index_to_angle(
-                        global_idx,
-                        msg.angle_min,
-                        msg.angle_increment
-                    )
-
-                    loc_valid    = self.is_valid_weld(current_angle)
-                    height_valid = current_height >= self.min_height_threshold
-
-                    if current_width <= self.max_width and loc_valid and height_valid:
-                        found_weld            = True
-                        best_angle            = current_angle
-                        self.last_valid_angle = best_angle
-                        self.last_known_angle = best_angle
-                        self.missed_count     = 0
-                        self.coast_count       = 0
-                        raw_msg = Float32()
-                        raw_msg.data  = float(current_angle)
-                        self.raw_angle_pub.publish(raw_msg)
-                        break
 
             # ── Step 7.5: Re-lock Confirmation Gate ──
             # ถ้าเฟรมนี้เพิ่งจะ "ล็อกใหม่" (ก่อนหน้านี้ยังไม่

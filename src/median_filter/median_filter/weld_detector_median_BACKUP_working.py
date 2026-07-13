@@ -32,7 +32,7 @@ class WeldDetectorMedian(Node):
         # ตำแหน่งเส้นจริงบนถัง
         # ══════════════════════════════════════════
         self.roi_start = 313
-        self.roi_end   = 421   # 109 steps 313, 421
+        self.roi_end   = 421   # 109 steps
 
         # ══════════════════════════════════════════
         # FILTER
@@ -68,7 +68,7 @@ class WeldDetectorMedian(Node):
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(2.9)  # เข้มกว่าเดิมมาก
 
         # ══════════════════════════════════════════
         # RE-LOCK CONFIRMATION GATE
@@ -115,9 +115,9 @@ class WeldDetectorMedian(Node):
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
         self.heading_offset   = math.radians(0.0)
-        self.exclusion_zone_global_idx = (0, 0)
+
         # ══════════════════════════════════════════
-        # TIMEOUT1
+        # TIMEOUT
         # ══════════════════════════════════════════
         self.last_scan_time    = self.get_clock().now()
         self.scan_timeout_sec  = 3.0
@@ -217,13 +217,6 @@ class WeldDetectorMedian(Node):
             else:
                 lateral_angle = 0.0
 
-            excl_start, excl_end = self.exclusion_zone_global_idx
-            excl_local_start = excl_start - self.roi_start
-            excl_local_end = excl_end - self.roi_start
-            if 0 <= excl_local_start < len(flattened):
-                lo = max(0, excl_local_start)
-                hi = min(len(flattened), excl_local_end + 1)
-                flattened[lo:hi] = 0.0
             # ── Step 6: Find Peaks ────────────────────
             # หา peak ที่โดดเด่นพอ
             peaks, props = find_peaks(
