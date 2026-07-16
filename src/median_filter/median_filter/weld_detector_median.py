@@ -25,6 +25,7 @@ class WeldDetectorMedian(Node):
         self.angle_pub  = self.create_publisher(Float32, '/best_angle', 10)
         self.status_pub = self.create_publisher(String,  '/weld_status', 10)
         self.raw_angle_pub  = self.create_publisher(Float32, '/raw_angle', 10)
+
         # ══════════════════════════════════════════
         # ROI — ใช้ของรุ่นพี่ (กว้างพอสำหรับ scan)
         # ปรับ roi_start/roi_end ให้ตรงกับ
@@ -41,8 +42,8 @@ class WeldDetectorMedian(Node):
         # med_window ต้องน้อยกว่า roi size
         # ══════════════════════════════════════════
         self.sg_order    = 3
-        self.sg_framelen = 7    # smooth 3 จุดซ้าย-ขวา (จูนจาก grid search รอบ 2)
-        self.med_window  = 81   # background window (จูนจาก grid search รอบ 2)
+        self.sg_framelen = 11   # smooth 5 จุดซ้าย-ขวา
+        self.med_window  = 61   # background window
 
         # ══════════════════════════════════════════
         # PEAK PARAMETERS
@@ -50,9 +51,9 @@ class WeldDetectorMedian(Node):
         # min_height:     peak ต้องสูงเท่าไหร่
         # max_width:      peak กว้างได้ไม่เกินนี้
         # ══════════════════════════════════════════
-        self.min_prominence       = 0.0015 #0.003 nothing
-        self.min_height_threshold = 0.0035 #3 nothing
-        self.max_width            = 40   # จูนจาก grid search รอบ 2 80 bit good
+        self.min_prominence       = 0.0015
+        self.min_height_threshold = 0.0035
+        self.max_width            = 40
 
         # ══════════════════════════════════════════
         # TRACKING
@@ -66,8 +67,8 @@ class WeldDetectorMedian(Node):
         self.last_valid_angle     = float('nan')
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
-        self.reset_threshold      = 10    # จูนจาก grid search รอบ 2
-        self.angle_diff_threshold = math.radians(3.0)  # จูนจาก full grid search รอบ 1 = 5
+        self.reset_threshold      = 10
+        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
 
         # ══════════════════════════════════════════
         # RE-LOCK CONFIRMATION GATE
@@ -82,37 +83,27 @@ class WeldDetectorMedian(Node):
         # ══════════════════════════════════════════
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
-        self.relock_confirm_threshold = 4     # จูนจาก full grid search รอบ 1
-        self.relock_tolerance         = math.radians(3.0)  # จูนจาก full grid search รอบ 1
+        self.relock_confirm_threshold = 5
+        self.relock_tolerance         = math.radians(3.0)
 
         # ══════════════════════════════════════════
         # COAST — ประคองต่อด้วยมุมล่าสุดตอนหลุดสั้นๆ
         # กันอาการกระตุกจากการหลุดแว้บเดียว (noise) —
         # ไม่ต้อง publish NO_WELD ทันทีตั้งแต่เฟรมแรก
         # ที่หลุด ถ้ายังไม่หลุดนานเกิน coast_max เฟรม
-
         # ให้เชื่อ last_valid_angle ไปพลางก่อน หุ่นเดินช้า
         # มาก (max_linear_speed=0.035 m/s) ความเสี่ยง
         # จากการ coast ผิดจึงต่ำมาก
         # ══════════════════════════════════════════
         self.coast_count = 0
-        self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ยืนยันจาก full grid search รอบ 1)
+        self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ปรับได้)
 
         # ══════════════════════════════════════════
         # ANGLE HISTORY — median smooth 5 frames
         # ลด noise ของ angle output
         # ══════════════════════════════════════════
         self.angle_history = []
-        self.history_size  = 5   # ยืนยันแล้วจาก static test 2 รอบ:
-                                   # max jump ~1.05°, mean~0°, ทำซ้ำได้
-
-        # ══════════════════════════════════════════
-        # LAST PUBLISHED ANGLE — ค่าล่าสุดที่ publish ออกไป
-        # จริงตอน WELD_FOUND ปกติ (ผ่าน median + offset แล้ว)
-        # ใช้ตัวเดียวกันตอน coast ด้วย กันมี state ซ้ำซ้อน
-        # ที่ต้องคอย sync กันเอง (ไม่ใช้ raw ที่ยังไม่กรอง)
-        # ══════════════════════════════════════════
-        self.last_published_angle = float('nan')
+        self.history_size  = 5
 
         # ══════════════════════════════════════════
         # LATERAL CORRECTION (ของคุณ)
@@ -123,32 +114,8 @@ class WeldDetectorMedian(Node):
         self.center_avg       = 0.093
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
-        self.heading_offset   = math.radians(-1.54)  # ยืนยันจาก static
-                                                       # calibration test (ยืนนิ่ง, ground truth=0°)
-        # ══════════════════════════════════════════
-        # ADAPTIVE ROI — เลื่อน ROI ตามตำแหน่งรอยเชื่อมล่าสุด
-        # แทนที่ exclusion zone แบบ hardcode — ROI แคบและ
-        # ติดตามรอยเชื่อมจริง ทำให้ noise ที่อยู่ไกลจากรอยเชื่อม
-        # ไม่มีโอกาสหลุดเข้ามาอยู่ใน ROI ได้เลย
-        # ══════════════════════════════════════════
-        self.roi_base_width  = 95
-        # แคบกว่าเดิม (108) เพราะจะติดตามแทนครอบคลุมกว้าง
-        self.roi_default_center = (313 + 421) // 2
-        # 367 (จุดกลางตอนยังไม่เคย detect)
-        self.roi_max_shift   = 45
-        # เลื่อนจากจุดกลาง default ได้ไม่เกินนี้ (กันหลุดไปไกลผิดปกติ)
-        self.angle_min_cached = None
-        self.angle_inc_cached = None
+        self.heading_offset   = math.radians(0.0)
 
-        # ══════════════════════════════════════════
-        # RANGE GATE
-        # ตัดสัญญาณที่อยู่ไกลเกินกำหนด (เมตร) ให้กลายเป็นฉากหลัง
-        # ══════════════════════════════════════════
-        self.max_valid_range = 0.20  # Change to a float like 0.4 or 0.5 to activate
-        self.exclusion_zones_global_idx = [
-            (334, 368),   # ฝั่งซ้าย: มุม -11.34 ถึง -8.34 องศา
-            (396, 410),   # ฝั่งขวา: มุม ~5.6-7 องศา (ตัวที่เจอตอนนี้)
-        ]
         # ══════════════════════════════════════════
         # TIMEOUT
         # ══════════════════════════════════════════
@@ -203,31 +170,6 @@ class WeldDetectorMedian(Node):
             return True
         return abs(current_angle - self.last_known_angle) < self.angle_diff_threshold
 
-    def get_adaptive_roi(self):
-        if math.isnan(self.last_known_angle) or self.angle_min_cached is None:
-            # ยังไม่เคย detect / เพิ่ง reset → ใช้ ROI เต็มแบบเดิม
-            # เพื่อให้มีโอกาสหา peak เจอทุกตำแหน่งก่อน (ไม่จำกัดแคบ)
-            return 313, 421   # ROI เดิมแบบเต็ม
-
-        # ล็อกอยู่แล้ว → ค่อยแคบ ROI ติดตามตำแหน่งปัจจุบัน
-        center_idx = int(round(
-            (self.last_known_angle - self.angle_min_cached) / self.angle_inc_cached
-        ))
-
-        half = self.roi_base_width // 2
-        new_start = center_idx - half
-        new_end   = center_idx + half
-
-        # ── ขอบเขตแน่นหนา ห้ามหลุดเกิน ROI เต็มเดิมเด็ดขาด ──
-        # (313-421 คือขอบเขตปลอดภัยสุด ไม่ว่า last_known_angle จะเบี่ยงไปแค่ไหน)
-        new_start = max(new_start, 313)
-        new_end   = min(new_end, 421)
-
-        # กันกรณี new_start > new_end (ชนขอบทั้งสองด้าน)
-        if new_start >= new_end:
-            return 313, 421
-
-        return new_start, new_end
     # ════════════════════════════════════════════════
     # MAIN CALLBACK
     # ════════════════════════════════════════════════
@@ -236,12 +178,6 @@ class WeldDetectorMedian(Node):
         self.last_scan_time    = self.get_clock().now()
         self.timeout_triggered = False
 
-        # cache angle_min/increment ไว้ใช้คำนวณ ROI แบบ adaptive
-        self.angle_min_cached = msg.angle_min
-        self.angle_inc_cached = msg.angle_increment
-
-        self.roi_start, self.roi_end = self.get_adaptive_roi()
-
         # ── Step 1: ตัด ROI ──────────────────────────
         raw = np.array(
             msg.ranges[self.roi_start:self.roi_end + 1],
@@ -249,9 +185,6 @@ class WeldDetectorMedian(Node):
         )
         raw[np.isinf(raw)] = msg.range_max
         raw[np.isnan(raw)] = 0.0
-
-        if self.max_valid_range is not None:
-            raw[raw > self.max_valid_range] = msg.range_max
 
         if len(raw) < 50:
             self.publish_nan('ROI too short', status='ERROR')
@@ -284,15 +217,7 @@ class WeldDetectorMedian(Node):
             else:
                 lateral_angle = 0.0
 
-            # ── Step 6: Find Peaks ───────────
-            for excl_start, excl_end in self.exclusion_zones_global_idx:
-                excl_local_start = excl_start - self.roi_start
-                excl_local_end = excl_end - self.roi_start
-                if 0 <= excl_local_start < len(flattened):
-                    lo = max(0, excl_local_start)
-                    hi = min(len(flattened), excl_local_end + 1)
-                    flattened[lo:hi] = 0.0
-
+            # ── Step 6: Find Peaks ────────────────────
             # หา peak ที่โดดเด่นพอ
             peaks, props = find_peaks(
                 flattened,
@@ -342,6 +267,36 @@ class WeldDetectorMedian(Node):
                     raw_msg.data = float(best_angle)
                     self.raw_angle_pub.publish(raw_msg)
 
+                # ── Step 7: เลือก peak ที่ดีที่สุดจาก top 3 ─
+                # เช็ค width + angle_diff + height
+                for k in range(min(len(sorted_idx), 3)):
+                    idx           = sorted_idx[k]
+                    local_idx     = int(peaks[idx])
+                    current_width  = float(widths[idx])
+                    current_height = float(flattened[local_idx])
+                    global_idx    = self.roi_start + local_idx
+
+                    current_angle = self.index_to_angle(
+                        global_idx,
+                        msg.angle_min,
+                        msg.angle_increment
+                    )
+
+                    loc_valid    = self.is_valid_weld(current_angle)
+                    height_valid = current_height >= self.min_height_threshold
+
+                    if current_width <= self.max_width and loc_valid and height_valid:
+                        found_weld            = True
+                        best_angle            = current_angle
+                        self.last_valid_angle = best_angle
+                        self.last_known_angle = best_angle
+                        self.missed_count     = 0
+                        self.coast_count       = 0
+                        raw_msg = Float32()
+                        raw_msg.data  = float(current_angle)
+                        self.raw_angle_pub.publish(raw_msg)
+                        break
+
             # ── Step 7.5: Re-lock Confirmation Gate ──
             # ถ้าเฟรมนี้เพิ่งจะ "ล็อกใหม่" (ก่อนหน้านี้ยังไม่
             # ล็อกอยู่ / last_known_angle เป็น nan) ห้ามเชื่อ
@@ -389,11 +344,6 @@ class WeldDetectorMedian(Node):
                 )
 
                 corrected = smoothed - self.heading_offset
-                # ── เก็บค่าที่กำลังจะ publish จริงไว้เลย ──
-                # (ตัวเดียวกับที่ PID เห็น ไม่มี state แยกซ้ำ
-                # ให้ coast ไปอ่านตัวนี้ตรงๆ ได้เลย)
-                self.last_published_angle = corrected
-
                 self.publish_status('WELD_FOUND')
                 out      = Float32()
                 out.data = float(corrected)
@@ -401,38 +351,32 @@ class WeldDetectorMedian(Node):
 
             else:
                 # ── Step 9: No Weld / Coast ──────────
+                self.angle_history = []
                 self.missed_count += 1
 
                 if self.missed_count >= self.reset_threshold:
                     # หลุดนานเกินไปจริง ยอมรับว่า NO_WELD
                     # และเปิด gate ใหม่ให้ล็อกได้อิสระรอบหน้า
-                    # ── ล้าง angle_history เฉพาะตรงนี้เท่านั้น ──
-                    # (full reset จริงๆ ค่อยเริ่มนับ median ใหม่
-                    # ตั้งแต่ศูนย์ ต่างจาก coast ที่หลุดแค่สั้นๆ
-                    # ไม่ควรทำให้ smoothing history หายไปด้วย)
-                    self.angle_history         = []
-                    self.last_valid_angle      = float('nan')
-                    self.last_known_angle      = float('nan')
-                    self.last_published_angle  = float('nan')
-                    self.missed_count          = 0
-                    self.coast_count           = 0
+                    self.last_valid_angle  = float('nan')
+                    self.last_known_angle  = float('nan')
+                    self.missed_count      = 0
+                    self.coast_count       = 0
                     self.reset_relock_gate()
                     self.publish_nan('No valid weld', status='NO_WELD')
                 elif (
                     self.coast_count < self.coast_max
-                    and not math.isnan(self.last_published_angle)
+                    and not math.isnan(self.last_valid_angle)
                 ):
                     # หลุดสั้นๆ ยังไม่เกิน coast_max เฟรม
-                    # ประคองต่อด้วย "ค่าล่าสุดที่ publish ไปจริง"
-                    # (ตัวเดียวกับที่ PID เคยเห็น ผ่าน median+
-                    # offset มาแล้วครบ) ไม่ใช่ raw ที่ยังไม่กรอง
+                    # ประคองต่อด้วยมุมล่าสุด ไม่เพิ่ง publish
+                    # NO_WELD ทันที กันอาการกระตุกจาก noise
                     self.coast_count += 1
                     self.publish_status('WELD_FOUND')
                     out      = Float32()
-                    out.data = float(self.last_published_angle)
+                    out.data = float(self.last_valid_angle)
                     self.angle_pub.publish(out)
                     self.get_logger().info(
-                        f'Coasting on last published angle '
+                        f'Coasting on last angle '
                         f'({self.coast_count}/{self.coast_max})'
                     )
                 else:
@@ -441,11 +385,10 @@ class WeldDetectorMedian(Node):
                     self.publish_nan('No valid weld', status='NO_WELD')
 
         except Exception as e:
-            self.last_valid_angle      = float('nan')
-            self.last_known_angle      = float('nan')
-            self.last_published_angle  = float('nan')
-            self.angle_history         = []
-            self.coast_count           = 0
+            self.last_valid_angle  = float('nan')
+            self.last_known_angle  = float('nan')
+            self.angle_history     = []
+            self.coast_count       = 0
             self.reset_relock_gate()
             self.publish_nan(f'Error: {e}', status='ERROR')
 
