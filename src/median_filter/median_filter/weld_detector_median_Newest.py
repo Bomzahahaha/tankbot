@@ -114,8 +114,28 @@ class WeldDetectorMedian(Node):
         self.center_avg       = 0.093
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
-        self.heading_offset   = math.radians(0.0)
-        self.exclusion_zone_global_idx = (334, 368)  # global index, มุม -11.34 ถึง -8.34 องศา
+        self.heading_offset   = math.radians(2.72)
+        # ══════════════════════════════════════════
+        # ADAPTIVE ROI — เลื่อน ROI ตามตำแหน่งรอยเชื่อมล่าสุด
+        # แทนที่ exclusion zone แบบ hardcode — ROI แคบและ
+        # ติดตามรอยเชื่อมจริง ทำให้ noise ที่อยู่ไกลจากรอยเชื่อม
+        # ไม่มีโอกาสหลุดเข้ามาอยู่ใน ROI ได้เลย
+        # ══════════════════════════════════════════
+        self.roi_base_width  = 60   
+        # แคบกว่าเดิม (108) เพราะจะติดตามแทนครอบคลุมกว้าง
+        self.roi_default_center = (313 + 421) // 2   
+        # 367 (จุดกลางตอนยังไม่เคย detect)
+        self.roi_max_shift   = 40   
+        # เลื่อนจากจุดกลาง default ได้ไม่เกินนี้ (กันหลุดไปไกลผิดปกติ)
+        self.angle_min_cached = None
+        self.angle_inc_cached = None
+        
+        # ══════════════════════════════════════════
+        # RANGE GATE
+        # ตัดสัญญาณที่อยู่ไกลเกินกำหนด (เมตร) ให้กลายเป็นฉากหลัง
+        # ══════════════════════════════════════════
+        self.max_valid_range = None  # Change to a float like 0.4 or 0.5 to activate
+        
         # ══════════════════════════════════════════
         # TIMEOUT
         # ══════════════════════════════════════════
@@ -169,6 +189,29 @@ class WeldDetectorMedian(Node):
         if math.isnan(self.last_known_angle):
             return True
         return abs(current_angle - self.last_known_angle) < self.angle_diff_threshold
+        
+    def get_adaptive_roi(self):
+    if math.isnan(self.last_known_angle) or self.angle_min_cached is None:
+        # ยังไม่เคย detect เลย ใช้ ROI กลาง default
+        half = self.roi_base_width // 2
+        return self.roi_default_center - half, self.roi_default_center + half
+
+    # แปลง last_known_angle เป็น global index
+    center_idx = int(round(
+        (self.last_known_angle - self.angle_min_cached) / self.angle_inc_cached
+    ))
+
+    half = self.roi_base_width // 2
+    new_start = center_idx - half
+    new_end   = center_idx + half
+
+    # จำกัดไม่ให้เลื่อนไกลเกิน roi_max_shift จากจุดกลาง default (safety bound)
+    min_start = self.roi_default_center - self.roi_base_width // 2 - self.roi_max_shift
+    max_end   = self.roi_default_center + self.roi_base_width // 2 + self.roi_max_shift
+    new_start = max(new_start, min_start)
+    new_end   = min(new_end, max_end)
+
+    return new_start, new_end
 
     # ════════════════════════════════════════════════
     # MAIN CALLBACK
@@ -177,6 +220,12 @@ class WeldDetectorMedian(Node):
 
         self.last_scan_time    = self.get_clock().now()
         self.timeout_triggered = False
+        
+        # cache angle_min/increment ไว้ใช้คำนวณ ROI แบบ adaptive
+        self.angle_min_cached = msg.angle_min
+        self.angle_inc_cached = msg.angle_increment
+        
+        self.roi_start, self.roi_end = self.get_adaptive_roi()
 
         # ── Step 1: ตัด ROI ──────────────────────────
         raw = np.array(
@@ -185,6 +234,9 @@ class WeldDetectorMedian(Node):
         )
         raw[np.isinf(raw)] = msg.range_max
         raw[np.isnan(raw)] = 0.0
+        
+        if self.max_valid_range is not None:
+            raw[raw > self.max_valid_range] = msg.range_max
 
         if len(raw) < 50:
             self.publish_nan('ROI too short', status='ERROR')
@@ -217,14 +269,7 @@ class WeldDetectorMedian(Node):
             else:
                 lateral_angle = 0.0
 
-            # ── Step 6: Find Peaks ────────────────────
-            excl_start, excl_end = self.exclusion_zone_global_idx
-            excl_local_start = excl_start - self.roi_start
-            excl_local_end = excl_end - self.roi_start
-            if 0 <= excl_local_start < len(flattened):
-                lo = max(0, excl_local_start)
-                hi = min(len(flattened), excl_local_end + 1)
-                flattened[lo:hi] = 0.0
+            # ── Step 6: Find Peaks ───────────
             # หา peak ที่โดดเด่นพอ
             peaks, props = find_peaks(
                 flattened,
