@@ -48,6 +48,12 @@ class WeldDetectorMedian(Node):
         self.relock_confirm_threshold = 5
         self.relock_tolerance         = math.radians(3.0)
 
+        # v4 direction-consistency gate (validated via backtest v1-v4, confirm_threshold=6)
+        self.streak_sign = 0
+        self.streak_len  = 0
+        self.consistency_confirm_threshold = 6
+        self.sign_eps = math.radians(0.05)
+
         self.coast_count = 0
         self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ปรับได้)
 
@@ -166,17 +172,38 @@ class WeldDetectorMedian(Node):
 
                 if candidates:
                     if math.isnan(self.last_known_angle):
-                        best_angle = min(candidates, key=lambda a: abs(a))
+                        raw_best = min(candidates, key=lambda a: abs(a))
                     else:
-                        best_angle = min(candidates, key=lambda a: abs(a - self.last_known_angle))
-                    found_weld            = True
-                    self.last_valid_angle = best_angle
-                    self.last_known_angle = best_angle
-                    self.missed_count     = 0
-                    self.coast_count       = 0
-                    raw_msg = Float32()
-                    raw_msg.data = float(best_angle)
-                    self.raw_angle_pub.publish(raw_msg)
+                        raw_best = min(candidates, key=lambda a: abs(a - self.last_known_angle))
+
+                    # --- v4 direction-consistency gate ---
+                    if math.isnan(self.last_known_angle):
+                        accept = True
+                    else:
+                        delta = raw_best - self.last_known_angle
+                        sign = 1 if delta > self.sign_eps else (-1 if delta < -self.sign_eps else 0)
+                        if sign != 0 and sign == self.streak_sign:
+                            self.streak_len += 1
+                        elif sign != 0:
+                            self.streak_sign, self.streak_len = sign, 1
+                        else:
+                            self.streak_sign, self.streak_len = 0, 0
+                        accept = self.streak_len < self.consistency_confirm_threshold
+
+                    if accept:
+                        best_angle = raw_best
+                        found_weld            = True
+                        self.last_valid_angle = best_angle
+                        self.last_known_angle = best_angle
+                        self.missed_count     = 0
+                        self.coast_count       = 0
+                        raw_msg = Float32()
+                        raw_msg.data = float(best_angle)
+                        self.raw_angle_pub.publish(raw_msg)
+                    else:
+                        # สงสัยว่า drift สะสม -> freeze ที่ค่าเดิม
+                        best_angle = self.last_known_angle
+                        found_weld = True
 
             if found_weld and not was_locked:
                 if math.isnan(self.relock_candidate_angle):
@@ -227,6 +254,7 @@ class WeldDetectorMedian(Node):
                     self.last_known_angle  = float('nan')
                     self.missed_count      = 0
                     self.coast_count       = 0
+                    self.streak_sign, self.streak_len = 0, 0
                     self.reset_relock_gate()
                     self.publish_nan('No valid weld', status='NO_WELD')
                 elif (
