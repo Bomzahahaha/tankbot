@@ -26,8 +26,8 @@ class WeldDetectorMedian(Node):
         self.status_pub = self.create_publisher(String,  '/weld_status', 10)
         self.raw_angle_pub  = self.create_publisher(Float32, '/raw_angle', 10)
 
-        self.roi_start = 341
-        self.roi_end   = 427   # 109 steps
+        self.roi_start = 313
+        self.roi_end   = 421   # 109 steps
 
         self.sg_order    = 3
         self.sg_framelen = 9    # smooth 4 จุดซ้าย-ขวา
@@ -41,7 +41,7 @@ class WeldDetectorMedian(Node):
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(1.0)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
 
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
@@ -53,6 +53,15 @@ class WeldDetectorMedian(Node):
         self.streak_len  = 0
         self.consistency_confirm_threshold = 6
         self.sign_eps = math.radians(0.05)
+
+        # mode-based relock fix (claude_code_prompt_mode_based_fix): avoids the
+        # near-0deg cold-start bias on mid-run resets, and tolerates occasional
+        # single-frame noise via a sliding-window mode instead of a raw streak
+        self.has_ever_locked = False
+        self.candidate_buffer = []
+        self.buffer_size = 20
+        self.mode_bin_width = math.radians(2.0)
+        self.mode_confirm_ratio = 0.4
 
         self.coast_count = 0
         self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ปรับได้)
@@ -110,6 +119,23 @@ class WeldDetectorMedian(Node):
             return True
         return abs(current_angle - self.last_known_angle) < self.angle_diff_threshold
 
+    def get_mode_candidate(self):
+        """หาค่าที่ปรากฏบ่อยที่สุดใน buffer (ทนต่อ noise แทรกเป็นครั้งคราว)"""
+        if len(self.candidate_buffer) < self.buffer_size:
+            return None
+        best_center = None
+        best_count = 0
+        for center in self.candidate_buffer:
+            count = sum(1 for v in self.candidate_buffer if abs(v - center) < self.mode_bin_width)
+            if count > best_count:
+                best_count = count
+                best_center = center
+        if best_count / len(self.candidate_buffer) >= self.mode_confirm_ratio:
+            # คืนค่าเฉลี่ยของกลุ่มที่ชนะ ไม่ใช่แค่ตัวแทน
+            cluster = [v for v in self.candidate_buffer if abs(v - best_center) < self.mode_bin_width]
+            return sum(cluster) / len(cluster)
+        return None
+
     def scan_callback(self, msg: LaserScan):
 
         self.last_scan_time    = self.get_clock().now()
@@ -156,6 +182,7 @@ class WeldDetectorMedian(Node):
 
                 sorted_idx = np.argsort(prominences)[::-1]
                 candidates = []
+                top1_angle = float('nan')
                 for k in range(min(len(sorted_idx), 3)):
                     idx            = sorted_idx[k]
                     local_idx      = int(peaks[idx])
@@ -167,12 +194,28 @@ class WeldDetectorMedian(Node):
                     )
                     loc_valid    = self.is_valid_weld(current_angle)
                     height_valid = current_height >= self.min_height_threshold
+                    if k == 0 and current_width <= self.max_width and height_valid:
+                        # top1: พีคแรงสุดจริง ไม่กรอง loc_valid (ใช้เลี้ยง mode-based buffer)
+                        top1_angle = current_angle
                     if current_width <= self.max_width and loc_valid and height_valid:
                         candidates.append(current_angle)
 
+                if not math.isnan(top1_angle):
+                    self.candidate_buffer.append(top1_angle)
+                    if len(self.candidate_buffer) > self.buffer_size:
+                        self.candidate_buffer.pop(0)
+
                 if candidates:
                     if math.isnan(self.last_known_angle):
-                        raw_best = min(candidates, key=lambda a: abs(a))
+                        if not self.has_ever_locked:
+                            raw_best = min(candidates, key=lambda a: abs(a))   # cold-start จริง
+                        else:
+                            mode_candidate = self.get_mode_candidate()
+                            if mode_candidate is not None:
+                                # เลือก candidate ที่ใกล้ mode_candidate ที่สุด (ไม่ใช่ใกล้ 0)
+                                raw_best = min(candidates, key=lambda a: abs(a - mode_candidate))
+                            else:
+                                raw_best = min(candidates, key=lambda a: abs(a))   # buffer ยังไม่พอ fallback ค่าเดิม
                     else:
                         raw_best = min(candidates, key=lambda a: abs(a - self.last_known_angle))
 
@@ -221,6 +264,7 @@ class WeldDetectorMedian(Node):
                     found_weld            = False
                     best_angle            = float('nan')
                 else:
+                    self.has_ever_locked = True
                     self.reset_relock_gate()
 
             if found_weld and not math.isnan(best_angle):
