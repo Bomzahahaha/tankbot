@@ -26,8 +26,8 @@ class WeldDetectorMedian(Node):
         self.status_pub = self.create_publisher(String,  '/weld_status', 10)
         self.raw_angle_pub  = self.create_publisher(Float32, '/raw_angle', 10)
 
-        self.roi_start = 313
-        self.roi_end   = 421   # 109 steps
+        self.roi_start = 341
+        self.roi_end   = 427   # 109 steps
 
         self.sg_order    = 3
         self.sg_framelen = 9    # smooth 4 จุดซ้าย-ขวา
@@ -41,7 +41,7 @@ class WeldDetectorMedian(Node):
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(1.0)  # เข้มกว่าเดิมมาก
 
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
