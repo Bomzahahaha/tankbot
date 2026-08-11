@@ -61,7 +61,7 @@ class WeldDetectorMedian(Node):
         self.candidate_buffer = []
         self.buffer_size = 20
         self.mode_bin_width = math.radians(2.0)
-        self.mode_confirm_ratio = 0.4
+        self.mode_confirm_ratio = 0.5
 
         self.coast_count = 0
         self.coast_max    = 0   # หลุดได้กี่เฟรมก่อนยอมแพ้ (ปรับได้)
