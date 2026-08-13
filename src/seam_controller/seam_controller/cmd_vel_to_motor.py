@@ -19,12 +19,11 @@ class CmdVelToMotorClosedLoop(Node):
         self.ticks_per_rev = 200
 
         # --- Feedforward: ตารางจริงที่วัดจาก tank test (PWM% -> speed m/s) ---
-        # PWM 20%->3.4cm/s, 40%->8.0cm/s, 60%->12.6cm/s, 80%->17.5cm/s, 100%->22.0cm/s
         self.pwm_calib_pwm   = [0.20, 0.40, 0.60, 0.80, 1.00]
         self.pwm_calib_speed = [0.034, 0.080, 0.126, 0.175, 0.220]  # m/s
 
-        self.max_spd_r = 0.22   # ล้อขวk kff (คงไว้เผื่อจุดอื่นอ้างอิง)
-        self.max_spd_l = 0.22   # ล้อซ้าย kff
+        self.max_spd_r = 0.22
+        self.max_spd_l = 0.22
 
         # --- PID แยกฝั่ง (Independent) ---
         self.kp_r = 3.0;  self.ki_r = 0.35
@@ -35,12 +34,18 @@ class CmdVelToMotorClosedLoop(Node):
         self.alpha       = 0.6
         self.cmd_timeout = 0.5
 
-        # --- Kick-start (แรงกระตุ้นเริ่มต้น กันปัญหา stiction ตอนเริ่มขยับจากหยุดนิ่ง) ---
-        # kickstart_pwm=0.40 (~8.0 cm/s ตามตารางจริง) — ต่ำกว่า 0.5 เดิมตามที่ปรับให้ปลอดภัยขึ้น
-        # ปรับขึ้น/ลงทีละ 0.05 ตามผลทดสอบจริง ถ้ายังไม่พอให้เริ่มขยับใน 0.1s
-        self.kickstart_pwm      = 0.40
-        self.kickstart_duration = 0.1   # วินาที
-        self.kickstart_movement_threshold = 0.002  # m/s — ถือว่า "เริ่มขยับแล้ว" ถ้าเร็วกว่านี้
+        # --- Kick-start (ยืนยันแล้วจากทดสอบจริงบนถัง: pwm=0.6, duration=0.3 -> ขยับใน 0.047s) ---
+        self.kickstart_pwm      = 0.60
+        self.kickstart_duration = 0.3   # วินาที
+        self.kickstart_movement_threshold = 0.002  # m/s
+
+        # --- Grace period (กัน kick-start ซ้ำถี่ๆ ตอน WELD_FOUND/NO_WELD flicker) ---
+        # จากข้อมูลจริง real_tank_test1: NO_WELD median=0.13s, WELD_FOUND median=0.2s (74% < 0.3s)
+        # ตั้ง grace_period ให้ยาวกว่า median ทั้งคู่รวมกันพอสมควร กันไม่ให้ kick-start ซ้ำถี่เกินไป
+        self.kickstart_grace_period = 0.5   # วินาที
+        self.last_moving_time_r = None   # เวลาล่าสุดที่ล้อขวายังขยับอยู่ (>threshold)
+        self.last_moving_time_l = None
+
         self.kickstart_start_r = None
         self.kickstart_start_l = None
 
@@ -98,7 +103,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.create_timer(0.01, self.read_serial)
         self.create_timer(0.05, self.control_loop)
         self.create_timer(0.05, self.log_data)
-        self.get_logger().info("🚀 TankBot Dual-PID Node Started (kick-start + table feedforward)")
+        self.get_logger().info("🚀 TankBot Dual-PID Node Started (kick-start + grace-period + table feedforward)")
 
     # =====================================================================
     def read_serial(self):
@@ -128,12 +133,12 @@ class CmdVelToMotorClosedLoop(Node):
         self.target_r = msg.linear.x + msg.angular.z * self.wheel_base / 2.0
         self.target_l = msg.linear.x - msg.angular.z * self.wheel_base / 2.0
 
+        # หมายเหตุ: ไม่รีเซ็ต kickstart_start ตรงนี้ทันทีอีกต่อไป
+        # ปล่อยให้ compute_pwm() ตัดสินใจเองโดยอิงจาก grace_period + last_moving_time
         if abs(self.target_r) < 1e-4:
             self.integ_r = 0
-            self.kickstart_start_r = None
         if abs(self.target_l) < 1e-4:
             self.integ_l = 0
-            self.kickstart_start_l = None
 
     def on_angle(self, msg): self.best_angle  = msg.data
     def on_raw_angle(self, msg): self.raw_angle  = msg.data
@@ -147,7 +152,6 @@ class CmdVelToMotorClosedLoop(Node):
         if dt < self.speed_dt: return spd, pt, ptime
         delta = ticks - pt
 
-        # กรอง encoder ที่กระโดดผิดปกติ
         max_ticks = (0.22 / (2.0 * math.pi * self.wheel_radius)) \
                     * self.ticks_per_rev * dt * 2.0
         if abs(delta) > max_ticks:
@@ -165,44 +169,51 @@ class CmdVelToMotorClosedLoop(Node):
 
     # =====================================================================
     def speed_to_pwm(self, target_speed):
-        """
-        หา PWM (0.0-1.0) ที่ควรใช้จากความเร็วเป้าหมาย (m/s)
-        โดย interpolate จากตารางที่วัดจริงบนถัง (ไม่ใช่สูตรเส้นตรงเดา)
-        """
+        """หา PWM (0.0-1.0) จากความเร็วเป้าหมาย โดย interpolate จากตารางที่วัดจริงบนถัง"""
         if target_speed <= 0:
             return 0.0
-        xs = self.pwm_calib_speed   # speed points (m/s), เรียงจากน้อยไปมาก
-        ys = self.pwm_calib_pwm     # pwm points ตรงกัน
+        xs = self.pwm_calib_speed
+        ys = self.pwm_calib_pwm
 
         if target_speed <= xs[0]:
-            # ต่ำกว่าจุดต่ำสุดที่วัดได้ -> scale เชิงเส้นจาก origin (0,0) ไปจุดแรก
             return target_speed / xs[0] * ys[0]
         if target_speed >= xs[-1]:
-            return 1.0  # เกินตารางที่วัดไว้ -> เต็ม PWM
+            return 1.0
 
-        # หาช่วงที่ target_speed อยู่ระหว่าง แล้ว interpolate เชิงเส้น
         for i in range(len(xs) - 1):
             if xs[i] <= target_speed <= xs[i + 1]:
                 frac = (target_speed - xs[i]) / (xs[i + 1] - xs[i])
                 return ys[i] + frac * (ys[i + 1] - ys[i])
-        return 1.0  # เผื่อกรณีขอบ ไม่ควรมาถึงจุดนี้
+        return 1.0
 
     # =====================================================================
-    def compute_pwm(self, target, speed, integ, kp, ki, kickstart_start):
+    def compute_pwm(self, target, speed, integ, kp, ki, kickstart_start, last_moving_time):
         """
-        คำนวณ PWM สำหรับล้อหนึ่งข้าง รวม kick-start + table-feedforward + PID
-        คืนค่า: (pwm, integ_ใหม่, kickstart_start_ใหม่, using_kickstart, ff_value)
+        คำนวณ PWM สำหรับล้อหนึ่งข้าง รวม kick-start (พร้อม grace period) + table-feedforward + PID
+        คืนค่า: (pwm, integ_ใหม่, kickstart_start_ใหม่, last_moving_time_ใหม่, using_kickstart, ff_value)
         """
         now = time.time()
 
         if abs(target) < 1e-4:
-            return 0.0, 0.0, None, False, 0.0
+            # target=0 (NO_WELD) — ตัด PWM ทันที แต่ "ไม่รีเซ็ต" kickstart_start/last_moving_time
+            # เก็บสถานะไว้เผื่อกลับมาเร็ว (ภายใน grace_period) จะได้ไม่ต้อง kick-start ซ้ำ
+            return 0.0, 0.0, kickstart_start, last_moving_time, False, 0.0
 
         abs_tgt = abs(target)
         abs_spd = abs(speed)
 
-        # เพิ่งเริ่มมี target ใหม่ และยังแทบไม่ขยับเลย -> เริ่มนับ kick-start
-        if kickstart_start is None and abs_spd < self.kickstart_movement_threshold:
+        # อัปเดตว่า "ล้อยังขยับอยู่" ล่าสุดเมื่อไหร่ (ใช้เช็ค grace period)
+        if abs_spd >= self.kickstart_movement_threshold:
+            last_moving_time = now
+
+        # เพิ่งขยับมา (ภายใน grace_period) หรือไม่ -> ถ้าใช่ ไม่ต้อง kick-start ใหม่
+        recently_moving = (
+            last_moving_time is not None
+            and (now - last_moving_time) < self.kickstart_grace_period
+        )
+
+        # เริ่ม kick-start เฉพาะกรณี: target ใหม่ + ยังไม่ขยับ + ไม่ได้ "เพิ่งขยับมา" (ไม่ใช่แค่ flicker สั้นๆ)
+        if kickstart_start is None and abs_spd < self.kickstart_movement_threshold and not recently_moving:
             kickstart_start = now
 
         using_kickstart = (
@@ -212,19 +223,18 @@ class CmdVelToMotorClosedLoop(Node):
         )
 
         if using_kickstart:
-            # ช่วง kick-start: ใช้ PWM คงที่แรงๆ ไม่ผ่าน PID เพื่อเอาชนะ stiction
-            return self.kickstart_pwm, integ, kickstart_start, True, 0.0
+            return self.kickstart_pwm, integ, kickstart_start, last_moving_time, True, 0.0
 
-        # ขยับได้แล้ว หรือ kick-start หมดเวลาแล้ว -> จบ kick-start
-        if kickstart_start is not None and abs_spd >= self.kickstart_movement_threshold:
+        # ขยับได้แล้ว หรือ kick-start หมดเวลา หรือเพิ่งขยับมา (ข้าม kick-start) -> จบสถานะ kick-start
+        if kickstart_start is not None and (abs_spd >= self.kickstart_movement_threshold or recently_moving):
             kickstart_start = None
 
-        # Feedforward จากตารางจริง (แทนสูตรเส้นตรงเดา) + PID (P+I) แก้ error ที่เหลือ
+        # PID ปกติ + feedforward จากตารางจริง
         err = abs_tgt - abs_spd
         integ = max(-self.integ_limit, min(integ + err * self.speed_dt, self.integ_limit))
         ff = self.speed_to_pwm(abs_tgt)
         pwm = ff + kp * err + ki * integ
-        return pwm, integ, kickstart_start, False, ff
+        return pwm, integ, kickstart_start, last_moving_time, False, ff
 
     # =====================================================================
     def control_loop(self):
@@ -237,20 +247,23 @@ class CmdVelToMotorClosedLoop(Node):
         self.dist_r = abs(self.ticks_r) * dpt
         self.dist_l = abs(self.ticks_l) * dpt
 
-        # 3. Timeout
+        # 3. Timeout (คำสั่งหายไปนานเกิน cmd_timeout -> รีเซ็ตทุกอย่างจริงจัง รวม kick-start state)
         if time.time() - self.last_cmd_time > self.cmd_timeout:
             self.target_r = self.target_l = 0.0
             self.integ_r  = self.integ_l  = 0.0
             self.kickstart_start_r = self.kickstart_start_l = None
+            self.last_moving_time_r = self.last_moving_time_l = None
 
-        # 4. PID + Kick-start + Table-feedforward ล้อขวา
-        pwm_r, self.integ_r, self.kickstart_start_r, ks_r, ff_r = self.compute_pwm(
-            self.target_r, self.speed_r, self.integ_r, self.kp_r, self.ki_r, self.kickstart_start_r
+        # 4. PID + Kick-start(grace) + Table-feedforward ล้อขวา
+        pwm_r, self.integ_r, self.kickstart_start_r, self.last_moving_time_r, ks_r, ff_r = self.compute_pwm(
+            self.target_r, self.speed_r, self.integ_r, self.kp_r, self.ki_r,
+            self.kickstart_start_r, self.last_moving_time_r
         )
 
         # 5. ล้อซ้าย
-        pwm_l, self.integ_l, self.kickstart_start_l, ks_l, ff_l = self.compute_pwm(
-            self.target_l, self.speed_l, self.integ_l, self.kp_l, self.ki_l, self.kickstart_start_l
+        pwm_l, self.integ_l, self.kickstart_start_l, self.last_moving_time_l, ks_l, ff_l = self.compute_pwm(
+            self.target_l, self.speed_l, self.integ_l, self.kp_l, self.ki_l,
+            self.kickstart_start_l, self.last_moving_time_l
         )
 
         self._ks_r_active, self._ks_l_active = ks_r, ks_l
