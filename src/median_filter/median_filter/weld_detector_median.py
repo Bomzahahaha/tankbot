@@ -26,12 +26,12 @@ class WeldDetectorMedian(Node):
         self.status_pub = self.create_publisher(String,  '/weld_status', 10)
         self.raw_angle_pub  = self.create_publisher(Float32, '/raw_angle', 10)
 
-        self.roi_start = 341
-        self.roi_end   = 427   # 109 steps
+        self.roi_start = 370
+        self.roi_end   = 398   # 109 steps
 
         self.sg_order    = 3
         self.sg_framelen = 9    # smooth 4 จุดซ้าย-ขวา
-        self.med_window  = 61   # background window
+        self.med_window  = 21   # background window
 
         self.min_prominence       = 0.0015
         self.min_height_threshold = 0.0035
@@ -41,7 +41,7 @@ class WeldDetectorMedian(Node):
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(3.0)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(1.0)  # เข้มกว่าเดิมมาก
 
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
@@ -148,7 +148,7 @@ class WeldDetectorMedian(Node):
         raw[np.isinf(raw)] = msg.range_max
         raw[np.isnan(raw)] = 0.0
 
-        if len(raw) < 50:
+        if len(raw) < 10:
             self.publish_nan('ROI too short', status='ERROR')
             return
 
