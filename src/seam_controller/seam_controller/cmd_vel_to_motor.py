@@ -18,11 +18,13 @@ class CmdVelToMotorClosedLoop(Node):
         self.wheel_radius = 0.0295   # Calibrated 29.5 mm
         self.ticks_per_rev = 200
 
-        # --- Feedforward แยกฝั่ง (ชดเชยความต่างของมอเตอร์) ---
-        self.max_spd_r = 0.22   # ล้อขวk kff
+        # --- Feedforward: ตารางจริงที่วัดจาก tank test (PWM% -> speed m/s) ---
+        # PWM 20%->3.4cm/s, 40%->8.0cm/s, 60%->12.6cm/s, 80%->17.5cm/s, 100%->22.0cm/s
+        self.pwm_calib_pwm   = [0.20, 0.40, 0.60, 0.80, 1.00]
+        self.pwm_calib_speed = [0.034, 0.080, 0.126, 0.175, 0.220]  # m/s
+
+        self.max_spd_r = 0.22   # ล้อขวk kff (คงไว้เผื่อจุดอื่นอ้างอิง)
         self.max_spd_l = 0.22   # ล้อซ้าย kff
-        self.pwm_offset_r = 0.05  # จาก min_pwm test
-        self.pwm_offset_l = 0.07  # จาก min_pwm test
 
         # --- PID แยกฝั่ง (Independent) ---
         self.kp_r = 3.0;  self.ki_r = 0.35
@@ -32,6 +34,15 @@ class CmdVelToMotorClosedLoop(Node):
         self.speed_dt    = 0.1
         self.alpha       = 0.6
         self.cmd_timeout = 0.5
+
+        # --- Kick-start (แรงกระตุ้นเริ่มต้น กันปัญหา stiction ตอนเริ่มขยับจากหยุดนิ่ง) ---
+        # kickstart_pwm=0.40 (~8.0 cm/s ตามตารางจริง) — ต่ำกว่า 0.5 เดิมตามที่ปรับให้ปลอดภัยขึ้น
+        # ปรับขึ้น/ลงทีละ 0.05 ตามผลทดสอบจริง ถ้ายังไม่พอให้เริ่มขยับใน 0.1s
+        self.kickstart_pwm      = 0.40
+        self.kickstart_duration = 0.1   # วินาที
+        self.kickstart_movement_threshold = 0.002  # m/s — ถือว่า "เริ่มขยับแล้ว" ถ้าเร็วกว่านี้
+        self.kickstart_start_r = None
+        self.kickstart_start_l = None
 
         # --- ตัวแปรภายใน ---
         self.last_cmd_time = time.time()
@@ -58,7 +69,8 @@ class CmdVelToMotorClosedLoop(Node):
         self.w.writerow(["t","vx","wz","tgt_r","tgt_l",
                          "spd_r","spd_l","err_r","err_l",
                          "ticks_r","ticks_l","dist_r","dist_l",
-                         "raw_angle","filtered_angle","error","weld"])
+                         "raw_angle","filtered_angle","error","weld",
+                         "ff_r","ff_l","kickstart_r","kickstart_l"])
 
         # --- Hardware ---
         self.lpwm = PWMOutputDevice(18, frequency=1000, initial_value=0.0)
@@ -80,11 +92,13 @@ class CmdVelToMotorClosedLoop(Node):
         self.create_subscription(String, "/weld_status", self.on_weld,  10)
         self.pub_sr = self.create_publisher(Float32, "/right_wheel_speed", 10)
         self.pub_sl = self.create_publisher(Float32, "/left_wheel_speed",  10)
+        self.pub_ticks_r = self.create_publisher(Float32, "/right_ticks", 10)
+        self.pub_ticks_l = self.create_publisher(Float32, "/left_ticks", 10)
 
         self.create_timer(0.01, self.read_serial)
         self.create_timer(0.05, self.control_loop)
         self.create_timer(0.05, self.log_data)
-        self.get_logger().info("🚀 TankBot Dual-PID Node Started")
+        self.get_logger().info("🚀 TankBot Dual-PID Node Started (kick-start + table feedforward)")
 
     # =====================================================================
     def read_serial(self):
@@ -116,8 +130,10 @@ class CmdVelToMotorClosedLoop(Node):
 
         if abs(self.target_r) < 1e-4:
             self.integ_r = 0
+            self.kickstart_start_r = None
         if abs(self.target_l) < 1e-4:
             self.integ_l = 0
+            self.kickstart_start_l = None
 
     def on_angle(self, msg): self.best_angle  = msg.data
     def on_raw_angle(self, msg): self.raw_angle  = msg.data
@@ -135,7 +151,7 @@ class CmdVelToMotorClosedLoop(Node):
         max_ticks = (0.22 / (2.0 * math.pi * self.wheel_radius)) \
                     * self.ticks_per_rev * dt * 2.0
         if abs(delta) > max_ticks:
-            return spd * 0.8, ticks, now  # ทิ้งค่านี้ ใช้ค่าเดิมค่อยๆ ลด
+            return spd * 0.8, ticks, now
 
         if delta == 0:
             spd = spd * 0.8
@@ -146,6 +162,69 @@ class CmdVelToMotorClosedLoop(Node):
         raw  = dist / dt
         spd  = self.alpha * spd + (1.0 - self.alpha) * raw
         return spd, ticks, now
+
+    # =====================================================================
+    def speed_to_pwm(self, target_speed):
+        """
+        หา PWM (0.0-1.0) ที่ควรใช้จากความเร็วเป้าหมาย (m/s)
+        โดย interpolate จากตารางที่วัดจริงบนถัง (ไม่ใช่สูตรเส้นตรงเดา)
+        """
+        if target_speed <= 0:
+            return 0.0
+        xs = self.pwm_calib_speed   # speed points (m/s), เรียงจากน้อยไปมาก
+        ys = self.pwm_calib_pwm     # pwm points ตรงกัน
+
+        if target_speed <= xs[0]:
+            # ต่ำกว่าจุดต่ำสุดที่วัดได้ -> scale เชิงเส้นจาก origin (0,0) ไปจุดแรก
+            return target_speed / xs[0] * ys[0]
+        if target_speed >= xs[-1]:
+            return 1.0  # เกินตารางที่วัดไว้ -> เต็ม PWM
+
+        # หาช่วงที่ target_speed อยู่ระหว่าง แล้ว interpolate เชิงเส้น
+        for i in range(len(xs) - 1):
+            if xs[i] <= target_speed <= xs[i + 1]:
+                frac = (target_speed - xs[i]) / (xs[i + 1] - xs[i])
+                return ys[i] + frac * (ys[i + 1] - ys[i])
+        return 1.0  # เผื่อกรณีขอบ ไม่ควรมาถึงจุดนี้
+
+    # =====================================================================
+    def compute_pwm(self, target, speed, integ, kp, ki, kickstart_start):
+        """
+        คำนวณ PWM สำหรับล้อหนึ่งข้าง รวม kick-start + table-feedforward + PID
+        คืนค่า: (pwm, integ_ใหม่, kickstart_start_ใหม่, using_kickstart, ff_value)
+        """
+        now = time.time()
+
+        if abs(target) < 1e-4:
+            return 0.0, 0.0, None, False, 0.0
+
+        abs_tgt = abs(target)
+        abs_spd = abs(speed)
+
+        # เพิ่งเริ่มมี target ใหม่ และยังแทบไม่ขยับเลย -> เริ่มนับ kick-start
+        if kickstart_start is None and abs_spd < self.kickstart_movement_threshold:
+            kickstart_start = now
+
+        using_kickstart = (
+            kickstart_start is not None
+            and (now - kickstart_start) < self.kickstart_duration
+            and abs_spd < self.kickstart_movement_threshold
+        )
+
+        if using_kickstart:
+            # ช่วง kick-start: ใช้ PWM คงที่แรงๆ ไม่ผ่าน PID เพื่อเอาชนะ stiction
+            return self.kickstart_pwm, integ, kickstart_start, True, 0.0
+
+        # ขยับได้แล้ว หรือ kick-start หมดเวลาแล้ว -> จบ kick-start
+        if kickstart_start is not None and abs_spd >= self.kickstart_movement_threshold:
+            kickstart_start = None
+
+        # Feedforward จากตารางจริง (แทนสูตรเส้นตรงเดา) + PID (P+I) แก้ error ที่เหลือ
+        err = abs_tgt - abs_spd
+        integ = max(-self.integ_limit, min(integ + err * self.speed_dt, self.integ_limit))
+        ff = self.speed_to_pwm(abs_tgt)
+        pwm = ff + kp * err + ki * integ
+        return pwm, integ, kickstart_start, False, ff
 
     # =====================================================================
     def control_loop(self):
@@ -162,31 +241,20 @@ class CmdVelToMotorClosedLoop(Node):
         if time.time() - self.last_cmd_time > self.cmd_timeout:
             self.target_r = self.target_l = 0.0
             self.integ_r  = self.integ_l  = 0.0
+            self.kickstart_start_r = self.kickstart_start_l = None
 
-        # PID ล้อขวา
-        if abs(self.target_r) < 1e-4:
-            pwm_r = 0.0; self.integ_r = 0.0
-        else:
-            # ✅ ใช้ abs ทั้งคู่ — direction จัดการโดย rdir แยกต่างหาก
-            abs_tgt_r = abs(self.target_r)
-            abs_spd_r = abs(self.speed_r)
-            err_r = abs_tgt_r - abs_spd_r
-            self.integ_r = max(-self.integ_limit,
-                           min(self.integ_r + err_r * self.speed_dt, self.integ_limit))
-            ff_r  = self.pwm_offset_r + (1.0 - self.pwm_offset_r) * (abs_tgt_r / self.max_spd_r)
-            pwm_r = ff_r + self.kp_r * err_r + self.ki_r * self.integ_r
+        # 4. PID + Kick-start + Table-feedforward ล้อขวา
+        pwm_r, self.integ_r, self.kickstart_start_r, ks_r, ff_r = self.compute_pwm(
+            self.target_r, self.speed_r, self.integ_r, self.kp_r, self.ki_r, self.kickstart_start_r
+        )
 
-        # PID ล้อซ้าย
-        if abs(self.target_l) < 1e-4:
-            pwm_l = 0.0; self.integ_l = 0.0
-        else:
-            abs_tgt_l = abs(self.target_l)
-            abs_spd_l = abs(self.speed_l)
-            err_l = abs_tgt_l - abs_spd_l
-            self.integ_l = max(-self.integ_limit,
-                           min(self.integ_l + err_l * self.speed_dt, self.integ_limit))
-            ff_l  = self.pwm_offset_l + (1.0 - self.pwm_offset_l) * (abs_tgt_l / self.max_spd_l)
-            pwm_l = ff_l + self.kp_l * err_l + self.ki_l * self.integ_l
+        # 5. ล้อซ้าย
+        pwm_l, self.integ_l, self.kickstart_start_l, ks_l, ff_l = self.compute_pwm(
+            self.target_l, self.speed_l, self.integ_l, self.kp_l, self.ki_l, self.kickstart_start_l
+        )
+
+        self._ks_r_active, self._ks_l_active = ks_r, ks_l
+        self._ff_r, self._ff_l = ff_r, ff_l
 
         # direction แยกออกมาต่างหาก
         self.rdir.value = self.target_r < 0.0
@@ -201,15 +269,18 @@ class CmdVelToMotorClosedLoop(Node):
         # 7. Publish
         self.pub_sr.publish(Float32(data=float(self.speed_r)))
         self.pub_sl.publish(Float32(data=float(self.speed_l)))
+        self.pub_ticks_r.publish(Float32(data=float(self.ticks_r)))
+        self.pub_ticks_l.publish(Float32(data=float(self.ticks_l)))
 
         # 8. INFO
         self.log_counter += 1
         if self.log_counter >= 20:
             self.log_counter = 0
+            ks_note = f" | KS(R={ks_r},L={ks_l})" if (ks_r or ks_l) else ""
             self.get_logger().info(
                 f"TGT(cm/s) R={self.target_r*100:.1f} L={self.target_l*100:.1f} | "
                 f"ACT(cm/s) R={self.speed_r*100:.1f} L={self.speed_l*100:.1f} | "
-                f"DIST(cm)  R={self.dist_r*100:.1f} L={self.dist_l*100:.1f}"
+                f"FF(%) R={ff_r*100:.0f} L={ff_l*100:.0f}{ks_note}"
             )
 
     # =====================================================================
@@ -226,7 +297,11 @@ class CmdVelToMotorClosedLoop(Node):
                          round(er,4), round(el,4),
                          self.ticks_r, self.ticks_l,
                          round(self.dist_r,4), round(self.dist_l,4),
-                         raw_ang,ang,err_ang, self.weld_status])
+                         raw_ang,ang,err_ang, self.weld_status,
+                         round(getattr(self, '_ff_r', 0.0),4),
+                         round(getattr(self, '_ff_l', 0.0),4),
+                         getattr(self, '_ks_r_active', False),
+                         getattr(self, '_ks_l_active', False)])
         self.f.flush()
 
     # =====================================================================
