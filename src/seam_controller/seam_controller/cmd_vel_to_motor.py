@@ -23,10 +23,12 @@ class CmdVelToMotorClosedLoop(Node):
         self.pwm_calib_pwm_floor   = [0.20, 0.40, 0.60, 0.80, 1.00]
         self.pwm_calib_speed_floor = [0.034, 0.080, 0.126, 0.175, 0.220]  # m/s
 
-        # ชุดถัง (ใช้งานจริง) — ค่าตั้งต้น = ของพื้นไปก่อน
-        # TODO: แก้ค่านี้เป็นตัวเลขจริงหลังทดสอบ /manual_pwm_test บนถังเสร็จ
+        # ชุดถัง (ใช้งานจริง) — วัดจริงจากถังแล้ว (2026-08-14)
+        # PWM 20%,40%: ไม่ขยับเลย (ยืนยัน 2 รอบ)
+        # PWM 60%,80%: จาก encoder (bag) หลัง plateau-detection
+        # PWM 100%: จากค่าเฉลี่ยวัดมือ 3 ครั้ง (bag recording ล้มเหลว 3 รอบติด เฉพาะระดับนี้)
         self.pwm_calib_pwm_tank   = [0.20, 0.40, 0.60, 0.80, 1.00]
-        self.pwm_calib_speed_tank = [0.034, 0.080, 0.126, 0.175, 0.220]  # m/s (ค่าชั่วคราว)
+        self.pwm_calib_speed_tank = [0.000, 0.000, 0.0385, 0.0817, 0.0871]  # m/s
 
         self.use_tank_calibration = True   # True=ใช้ถัง (งานจริง), False=ใช้พื้น (debug/เทียบ)
 
@@ -201,7 +203,10 @@ class CmdVelToMotorClosedLoop(Node):
 
     # =====================================================================
     def speed_to_pwm(self, target_speed):
-        """หา PWM (0.0-1.0) จากความเร็วเป้าหมาย โดยเลือกตาราง floor/tank ตาม use_tank_calibration"""
+        """หา PWM (0.0-1.0) จากความเร็วเป้าหมาย โดยเลือกตาราง floor/tank ตาม use_tank_calibration
+        หมายเหตุ: ตัดจุดที่ speed=0 ออกจากการ interpolate (เช่น PWM 20%,40% บนถังที่ไม่ขยับเลย)
+        เพราะทำให้เกิด 0/0 ตอนคำนวณ — ถ้า target ต่ำกว่าจุดต่ำสุดที่ขยับได้จริง
+        ใช้ PWM ต่ำสุดที่ยังขยับได้แทนการ extrapolate ลงไปหา 0 (ซึ่งจะไม่ขยับเลยจริงบนถัง)"""
         if target_speed <= 0:
             return 0.0
 
@@ -210,15 +215,21 @@ class CmdVelToMotorClosedLoop(Node):
         else:
             xs, ys = self.pwm_calib_speed_floor, self.pwm_calib_pwm_floor
 
-        if target_speed <= xs[0]:
-            return target_speed / xs[0] * ys[0]
-        if target_speed >= xs[-1]:
+        valid = [(x, y) for x, y in zip(xs, ys) if x > 0]
+        if not valid:
+            return 1.0
+        vx = [p[0] for p in valid]
+        vy = [p[1] for p in valid]
+
+        if target_speed <= vx[0]:
+            return vy[0]   # ต่ำกว่าจุดต่ำสุดที่ขยับได้จริง -> ใช้ PWM ต่ำสุดที่ยังขยับได้ (ไม่ extrapolate ลงไปหา 0)
+        if target_speed >= vx[-1]:
             return 1.0
 
-        for i in range(len(xs) - 1):
-            if xs[i] <= target_speed <= xs[i + 1]:
-                frac = (target_speed - xs[i]) / (xs[i + 1] - xs[i])
-                return ys[i] + frac * (ys[i + 1] - ys[i])
+        for i in range(len(vx) - 1):
+            if vx[i] <= target_speed <= vx[i + 1]:
+                frac = (target_speed - vx[i]) / (vx[i + 1] - vx[i])
+                return vy[i] + frac * (vy[i + 1] - vy[i])
         return 1.0
 
     # =====================================================================
@@ -300,6 +311,18 @@ class CmdVelToMotorClosedLoop(Node):
             self.pub_sl.publish(Float32(data=float(self.speed_l)))
             self.pub_ticks_r.publish(Float32(data=float(self.ticks_r)))
             self.pub_ticks_l.publish(Float32(data=float(self.ticks_l)))
+
+            # แก้บั๊ก: เพิ่ม log ตรงนี้ด้วย เพราะเดิม return ก่อนถึงส่วน INFO log ปกติ
+            # ทำให้ terminal ดูเหมือนไม่มีอะไรเกิดขึ้นเลยทั้งที่ ticks ทำงานถูกต้อง
+            self.log_counter += 1
+            if self.log_counter >= 20:
+                self.log_counter = 0
+                self.get_logger().info(
+                    f"[MANUAL PWM TEST] pwm={self.manual_pwm_value:.2f} | "
+                    f"ticks_R={self.ticks_r} ticks_L={self.ticks_l} | "
+                    f"speed_R={self.speed_r*100:.2f}cm/s speed_L={self.speed_l*100:.2f}cm/s"
+                )
+
             if time.time() - self.last_cmd_time > self.cmd_timeout:
                 self.manual_pwm_mode = False
                 self.rpwm.value = self.lpwm.value = 0.0
