@@ -1,0 +1,7 @@
+t,vx,wz,tgt_r,tgt_l,spd_r,spd_l,err_r,err_l,ticks_r,ticks_l,dist_r,dist_l,raw_angle,filtered_angle,error,weld,ff_r,ff_l,kickstart_r,kickstart_l,holding_r,holding_l,manual_pwm_mode
+2.157,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0.0,0.0,nan,nan,nan,UNKNOWN,0.0,0.0,False,False,True,True,False
+2.207,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0.0,0.0,nan,nan,nan,UNKNOWN,0.0,0.0,False,False,True,True,False
+2.257,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0.0,0.0,nan,nan,nan,UNKNOWN,0.0,0.0,False,False,True,True,False
+2.307,0.0,0.0,0.0,0.0,0.0025,0.0,-0.0025,0.0,1,0,0.0009,0.0,nan,nan,nan,UNKNOWN,0.0,0.0,False,False,True,True,False
+2.357,0.0,0.0,0.0,0.0,0.0025,0.0,-0.0025,0.0,1,0,0.0009,0.0,nan,nan,nan,UNKNOWN,0.0,0.0,False,False,True,True,False
+2.407,0.0,0.0,0.0,0.0,0.0025,0.0,-0.0025,0.0,1,0,0.0009,0.0,nan,nan,nan,UNKNOWN,0.0,0.0,False,False,True,True,False
