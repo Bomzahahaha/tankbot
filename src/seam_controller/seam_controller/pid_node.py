@@ -19,7 +19,7 @@ class SeamTrackerPID(Node):
         self.kd = 0.15
 
         # ── Motion ───────────────────────────────
-        self.max_linear_speed = 0.055
+        self.max_linear_speed = 0.075
         self.min_linear_speed = 0.010
         self.max_turn_speed   = 0.30
         self.stop_angle_rad   = math.radians(10.0)

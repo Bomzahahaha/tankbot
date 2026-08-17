@@ -18,19 +18,26 @@ class CmdVelToMotorClosedLoop(Node):
         self.wheel_radius = 0.0295   # Calibrated 29.5 mm
         self.ticks_per_rev = 200
 
-        # --- Feedforward: ตาราง 2 ชุด (floor=พื้น, tank=ถัง) ---
-        # ชุดพื้น (เก็บไว้อ้างอิง/debug เท่านั้น)
+        # =====================================================================
+        # --- Feedforward: ตาราง Calibration 3 ชุด (floor / vertical / horizontal) ---
+        # =====================================================================
+        # ชุดที่ 1: พื้นราบ (floor) — วัดจากพื้นปกติ
         self.pwm_calib_pwm_floor   = [0.20, 0.40, 0.60, 0.80, 1.00]
         self.pwm_calib_speed_floor = [0.034, 0.080, 0.126, 0.175, 0.220]  # m/s
 
-        # ชุดถัง (ใช้งานจริง) — วัดจริงจากถังแล้ว (2026-08-14)
-        # PWM 20%,40%: ไม่ขยับเลย (ยืนยัน 2 รอบ)
-        # PWM 60%,80%: จาก encoder (bag) หลัง plateau-detection
-        # PWM 100%: จากค่าเฉลี่ยวัดมือ 3 ครั้ง (bag recording ล้มเหลว 3 รอบติด เฉพาะระดับนี้)
-        self.pwm_calib_pwm_tank   = [0.20, 0.40, 0.60, 0.80, 1.00]
-        self.pwm_calib_speed_tank = [0.000, 0.000, 0.0385, 0.0817, 0.0871]  # m/s
+        # ชุดที่ 2: ถัง แนวดิ่ง (vertical) — วัดจากถังจริง ตอนไต่ขึ้น
+        self.pwm_calib_pwm_vertical   = [0.20, 0.40, 0.60, 0.80, 1.00]
+        self.pwm_calib_speed_vertical = [0.000, 0.000, 0.0385, 0.0817, 0.0871]  # m/s
+        # 20%,40% = dead zone จริง (ไม่ขยับเลยบนแนวดิ่ง)
 
-        self.use_tank_calibration = True   # True=ใช้ถัง (งานจริง), False=ใช้พื้น (debug/เทียบ)
+        # ชุดที่ 3: ถัง แนวนอน (horizontal) — วัดจากถังจริง ตอนเดินรอบวง
+        self.pwm_calib_pwm_horizontal   = [0.20, 0.40, 0.60, 0.80, 1.00]
+        self.pwm_calib_speed_horizontal = [0.0000, 0.0672, 0.1070, 0.1606, 0.2471]  # m/s
+        # เร็วกว่าแนวดิ่งมาก (ไม่มีแรงโน้มถ่วงต้านตามทิศทางเดิน)
+
+        # --- สวิตช์เลือกพื้นผิว — เปลี่ยนแค่บรรทัดนี้บรรทัดเดียวตอนย้ายไปทดสอบพื้นผิวอื่น ---
+        # ตัวเลือก: 'floor' | 'vertical' | 'horizontal'
+        self.surface_mode = 'horizontal'
 
         self.max_spd_r = 0.22
         self.max_spd_l = 0.22
@@ -50,7 +57,6 @@ class CmdVelToMotorClosedLoop(Node):
         self.kickstart_movement_threshold = 0.002  # m/s
 
         # --- Grace period (กัน kick-start ซ้ำถี่ๆ ตอน WELD_FOUND/NO_WELD flicker) ---
-        # จากข้อมูลจริง real_tank_test1: NO_WELD median=0.13s, WELD_FOUND median=0.2s (74% < 0.3s)
         self.kickstart_grace_period = 0.5   # วินาที
         self.last_moving_time_r = None
         self.last_moving_time_l = None
@@ -59,16 +65,15 @@ class CmdVelToMotorClosedLoop(Node):
         self.kickstart_start_l = None
 
         # --- Holding torque (กันไถลตอน NO_WELD บนพื้นผิวแนวดิ่ง) ---
-        # ยืนยันจากข้อมูลจริง: PWM=0 ตอน NO_WELD ทำให้หุ่นไถลลงจากแรงโน้มถ่วง (ticks ติดลบ)
-        # ต้อง tune holding_pwm จริงบนถัง — เริ่มจากค่านี้ แล้วปรับทีละ 0.02-0.03 จนไม่ไถล
+        # หมายเหตุ: แนวนอนไม่มีแรงโน้มถ่วงต้านตามทิศทางเดินโดยตรง อาจไม่จำเป็นเท่าแนวดิ่ง
+        # แต่เปิดไว้เป็นค่าเริ่มต้นเผื่อความปลอดภัย ปิดได้ด้วย holding_enabled=False ถ้าทดสอบแล้วไม่จำเป็น
         self.holding_pwm = 0.15
-        self.holding_enabled = True   # ตั้ง False ถ้าทดสอบบนพื้นราบ (ไม่ต้องใช้)
-        # จำกัดเวลา holding ต่อเนื่องสูงสุด กันมอเตอร์ร้อนสะสม (สงสัยว่าเกี่ยวกับ thermal shutdown ที่เจอ)
-        self.holding_max_duration = 5.0   # วินาที — ถ้า hold นานเกินนี้ ลด PWM ลงครึ่งหนึ่งชั่วคราว
+        self.holding_enabled = True
+        self.holding_max_duration = 5.0   # วินาที — กันมอเตอร์ร้อนสะสม (สงสัยเกี่ยวกับ thermal/undervoltage)
         self.holding_start_time_r = None
         self.holding_start_time_l = None
 
-        # --- Manual PWM test mode (สำหรับเก็บตาราง calibration บนถังใหม่) ---
+        # --- Manual PWM test mode (สำหรับเก็บตาราง calibration พื้นผิวใหม่ๆ ในอนาคต) ---
         self.manual_pwm_mode  = False
         self.manual_pwm_value = 0.0
 
@@ -99,7 +104,7 @@ class CmdVelToMotorClosedLoop(Node):
                          "ticks_r","ticks_l","dist_r","dist_l",
                          "raw_angle","filtered_angle","error","weld",
                          "ff_r","ff_l","kickstart_r","kickstart_l",
-                         "holding_r","holding_l","manual_pwm_mode"])
+                         "holding_r","holding_l","manual_pwm_mode","surface_mode"])
 
         # --- Hardware ---
         self.lpwm = PWMOutputDevice(18, frequency=1000, initial_value=0.0)
@@ -129,8 +134,8 @@ class CmdVelToMotorClosedLoop(Node):
         self.create_timer(0.05, self.control_loop)
         self.create_timer(0.05, self.log_data)
         self.get_logger().info(
-            "🚀 TankBot Dual-PID Node Started "
-            "(kick-start + grace-period + holding-torque + table feedforward + manual-pwm-test)"
+            f"🚀 TankBot Dual-PID Node Started | surface_mode = '{self.surface_mode}' "
+            "(kick-start + grace-period + holding-torque + 3-way calibration + manual-pwm-test)"
         )
 
     # =====================================================================
@@ -173,7 +178,7 @@ class CmdVelToMotorClosedLoop(Node):
 
     def on_manual_pwm(self, msg):
         """รับ PWM ตรงๆ (0.0-1.0) ข้าม PID/feedforward/kickstart/holding ทั้งหมด
-        ใช้เก็บตาราง calibration บนถังใหม่เท่านั้น"""
+        ใช้เก็บตาราง calibration พื้นผิวใหม่ๆ เท่านั้น"""
         self.manual_pwm_mode  = True
         self.manual_pwm_value = max(0.0, min(msg.data, 1.0))
         self.last_cmd_time = time.time()
@@ -202,18 +207,26 @@ class CmdVelToMotorClosedLoop(Node):
         return spd, ticks, now
 
     # =====================================================================
+    def get_active_calib_table(self):
+        """เลือกตาราง calibration ตาม surface_mode ปัจจุบัน"""
+        if self.surface_mode == 'floor':
+            return self.pwm_calib_speed_floor, self.pwm_calib_pwm_floor
+        elif self.surface_mode == 'vertical':
+            return self.pwm_calib_speed_vertical, self.pwm_calib_pwm_vertical
+        elif self.surface_mode == 'horizontal':
+            return self.pwm_calib_speed_horizontal, self.pwm_calib_pwm_horizontal
+        else:
+            self.get_logger().warn(f"Unknown surface_mode '{self.surface_mode}', fallback to vertical")
+            return self.pwm_calib_speed_vertical, self.pwm_calib_pwm_vertical
+
     def speed_to_pwm(self, target_speed):
-        """หา PWM (0.0-1.0) จากความเร็วเป้าหมาย โดยเลือกตาราง floor/tank ตาม use_tank_calibration
-        หมายเหตุ: ตัดจุดที่ speed=0 ออกจากการ interpolate (เช่น PWM 20%,40% บนถังที่ไม่ขยับเลย)
-        เพราะทำให้เกิด 0/0 ตอนคำนวณ — ถ้า target ต่ำกว่าจุดต่ำสุดที่ขยับได้จริง
-        ใช้ PWM ต่ำสุดที่ยังขยับได้แทนการ extrapolate ลงไปหา 0 (ซึ่งจะไม่ขยับเลยจริงบนถัง)"""
+        """หา PWM (0.0-1.0) จากความเร็วเป้าหมาย โดยเลือกตารางตาม surface_mode
+        ตัดจุดที่ speed=0 ออกจากการ interpolate (เช่น PWM 20%,40% บนแนวดิ่งที่ไม่ขยับเลย)
+        ถ้า target ต่ำกว่าจุดต่ำสุดที่ขยับได้จริง ใช้ PWM ต่ำสุดที่ยังขยับได้แทนการ extrapolate ไปหา 0"""
         if target_speed <= 0:
             return 0.0
 
-        if self.use_tank_calibration:
-            xs, ys = self.pwm_calib_speed_tank, self.pwm_calib_pwm_tank
-        else:
-            xs, ys = self.pwm_calib_speed_floor, self.pwm_calib_pwm_floor
+        xs, ys = self.get_active_calib_table()
 
         valid = [(x, y) for x, y in zip(xs, ys) if x > 0]
         if not valid:
@@ -222,7 +235,7 @@ class CmdVelToMotorClosedLoop(Node):
         vy = [p[1] for p in valid]
 
         if target_speed <= vx[0]:
-            return vy[0]   # ต่ำกว่าจุดต่ำสุดที่ขยับได้จริง -> ใช้ PWM ต่ำสุดที่ยังขยับได้ (ไม่ extrapolate ลงไปหา 0)
+            return vy[0]
         if target_speed >= vx[-1]:
             return 1.0
 
@@ -235,33 +248,23 @@ class CmdVelToMotorClosedLoop(Node):
     # =====================================================================
     def compute_pwm(self, target, speed, integ, kp, ki, kickstart_start,
                      last_moving_time, holding_start_time):
-        """
-        คำนวณ PWM สำหรับล้อหนึ่งข้าง รวม kick-start(grace) + holding-torque + table-feedforward + PID
-        คืนค่า: (pwm, integ_ใหม่, kickstart_start_ใหม่, last_moving_time_ใหม่,
-                 holding_start_time_ใหม่, using_kickstart, using_holding, ff_value)
-        """
         now = time.time()
 
         if abs(target) < 1e-4:
-            # target=0 (NO_WELD) — ไม่รีเซ็ต kickstart_start/last_moving_time ทันที
-            # (เก็บสถานะไว้เผื่อกลับมาเร็วภายใน grace_period จะได้ไม่ต้อง kick-start ซ้ำ)
             if not self.holding_enabled:
                 return 0.0, 0.0, kickstart_start, last_moving_time, None, False, False, 0.0
 
-            # เริ่มนับเวลาที่ holding เริ่มทำงาน (ถ้ายังไม่เคยเริ่ม)
             if holding_start_time is None:
                 holding_start_time = now
             hold_elapsed = now - holding_start_time
 
-            # จำกัดเวลา holding ต่อเนื่อง กันมอเตอร์ร้อนสะสม
             if hold_elapsed > self.holding_max_duration:
-                hold_pwm = self.holding_pwm * 0.5   # ลดครึ่งหนึ่งถ้า hold นานเกินไป
+                hold_pwm = self.holding_pwm * 0.5
             else:
                 hold_pwm = self.holding_pwm
 
             return hold_pwm, 0.0, kickstart_start, last_moving_time, holding_start_time, False, True, 0.0
 
-        # target != 0 -> เคลื่อนที่จริง -> เคลียร์สถานะ holding
         holding_start_time = None
 
         abs_tgt = abs(target)
@@ -290,7 +293,6 @@ class CmdVelToMotorClosedLoop(Node):
         if kickstart_start is not None and (abs_spd >= self.kickstart_movement_threshold or recently_moving):
             kickstart_start = None
 
-        # PID ปกติ + feedforward จากตาราง (floor/tank ตามสวิตช์)
         err = abs_tgt - abs_spd
         integ = max(-self.integ_limit, min(integ + err * self.speed_dt, self.integ_limit))
         ff = self.speed_to_pwm(abs_tgt)
@@ -299,7 +301,6 @@ class CmdVelToMotorClosedLoop(Node):
 
     # =====================================================================
     def control_loop(self):
-        # 0. Manual PWM test mode — ข้าม PID/feedforward/kickstart/holding ทั้งหมด
         if self.manual_pwm_mode:
             self.speed_r, self.pt_r, self.ptime_r = self.calc_speed(self.ticks_r, self.pt_r, self.ptime_r, self.speed_r)
             self.speed_l, self.pt_l, self.ptime_l = self.calc_speed(self.ticks_l, self.pt_l, self.ptime_l, self.speed_l)
@@ -312,13 +313,11 @@ class CmdVelToMotorClosedLoop(Node):
             self.pub_ticks_r.publish(Float32(data=float(self.ticks_r)))
             self.pub_ticks_l.publish(Float32(data=float(self.ticks_l)))
 
-            # แก้บั๊ก: เพิ่ม log ตรงนี้ด้วย เพราะเดิม return ก่อนถึงส่วน INFO log ปกติ
-            # ทำให้ terminal ดูเหมือนไม่มีอะไรเกิดขึ้นเลยทั้งที่ ticks ทำงานถูกต้อง
             self.log_counter += 1
             if self.log_counter >= 20:
                 self.log_counter = 0
                 self.get_logger().info(
-                    f"[MANUAL PWM TEST] pwm={self.manual_pwm_value:.2f} | "
+                    f"[MANUAL PWM TEST | surface={self.surface_mode}] pwm={self.manual_pwm_value:.2f} | "
                     f"ticks_R={self.ticks_r} ticks_L={self.ticks_l} | "
                     f"speed_R={self.speed_r*100:.2f}cm/s speed_L={self.speed_l*100:.2f}cm/s"
                 )
@@ -328,30 +327,25 @@ class CmdVelToMotorClosedLoop(Node):
                 self.rpwm.value = self.lpwm.value = 0.0
             return
 
-        # 1. อัปเดตความเร็วจริง
         self.speed_r, self.pt_r, self.ptime_r = self.calc_speed(self.ticks_r, self.pt_r, self.ptime_r, self.speed_r)
         self.speed_l, self.pt_l, self.ptime_l = self.calc_speed(self.ticks_l, self.pt_l, self.ptime_l, self.speed_l)
 
-        # 2. ระยะทางสะสม
         dpt = (2.0 * math.pi * self.wheel_radius) / self.ticks_per_rev
         self.dist_r = abs(self.ticks_r) * dpt
         self.dist_l = abs(self.ticks_l) * dpt
 
-        # 3. Timeout
         if time.time() - self.last_cmd_time > self.cmd_timeout:
             self.target_r = self.target_l = 0.0
             self.integ_r  = self.integ_l  = 0.0
             self.kickstart_start_r = self.kickstart_start_l = None
             self.last_moving_time_r = self.last_moving_time_l = None
 
-        # 4. ล้อขวา
         (pwm_r, self.integ_r, self.kickstart_start_r, self.last_moving_time_r,
          self.holding_start_time_r, ks_r, hold_r, ff_r) = self.compute_pwm(
             self.target_r, self.speed_r, self.integ_r, self.kp_r, self.ki_r,
             self.kickstart_start_r, self.last_moving_time_r, self.holding_start_time_r
         )
 
-        # 5. ล้อซ้าย
         (pwm_l, self.integ_l, self.kickstart_start_l, self.last_moving_time_l,
          self.holding_start_time_l, ks_l, hold_l, ff_l) = self.compute_pwm(
             self.target_l, self.speed_l, self.integ_l, self.kp_l, self.ki_l,
@@ -365,19 +359,16 @@ class CmdVelToMotorClosedLoop(Node):
         self.rdir.value = self.target_r < 0.0
         self.ldir.value = self.target_l >= 0.0
 
-        # 6. ส่ง PWM ออก Hardware
         self.rpwm.value = max(0.0, min(pwm_r, 1.0))
         self.lpwm.value = max(0.0, min(pwm_l, 1.0))
         self.rdir.value = self.target_r < 0.0
         self.ldir.value = self.target_l >= 0.0
 
-        # 7. Publish
         self.pub_sr.publish(Float32(data=float(self.speed_r)))
         self.pub_sl.publish(Float32(data=float(self.speed_l)))
         self.pub_ticks_r.publish(Float32(data=float(self.ticks_r)))
         self.pub_ticks_l.publish(Float32(data=float(self.ticks_l)))
 
-        # 8. INFO
         self.log_counter += 1
         if self.log_counter >= 20:
             self.log_counter = 0
@@ -385,7 +376,7 @@ class CmdVelToMotorClosedLoop(Node):
             if ks_r or ks_l: note += f" | KS(R={ks_r},L={ks_l})"
             if hold_r or hold_l: note += f" | HOLD(R={hold_r},L={hold_l})"
             self.get_logger().info(
-                f"TGT(cm/s) R={self.target_r*100:.1f} L={self.target_l*100:.1f} | "
+                f"[{self.surface_mode}] TGT(cm/s) R={self.target_r*100:.1f} L={self.target_l*100:.1f} | "
                 f"ACT(cm/s) R={self.speed_r*100:.1f} L={self.speed_l*100:.1f} | "
                 f"FF(%) R={ff_r*100:.0f} L={ff_l*100:.0f}{note}"
             )
@@ -411,7 +402,8 @@ class CmdVelToMotorClosedLoop(Node):
                          getattr(self, '_ks_l_active', False),
                          getattr(self, '_hold_r_active', False),
                          getattr(self, '_hold_l_active', False),
-                         self.manual_pwm_mode])
+                         self.manual_pwm_mode,
+                         self.surface_mode])
         self.f.flush()
 
     # =====================================================================
