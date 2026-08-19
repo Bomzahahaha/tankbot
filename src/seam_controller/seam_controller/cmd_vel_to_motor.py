@@ -74,7 +74,7 @@ class CmdVelToMotorClosedLoop(Node):
         # หมายเหตุ: แนวนอนไม่มีแรงโน้มถ่วงต้านตามทิศทางเดินโดยตรง อาจไม่จำเป็นเท่าแนวดิ่ง
         # แต่เปิดไว้เป็นค่าเริ่มต้นเผื่อความปลอดภัย ปิดได้ด้วย holding_enabled=False ถ้าทดสอบแล้วไม่จำเป็น
         self.holding_pwm = 0.15
-        self.holding_enabled = True
+        self.holding_enabled = False
         self.holding_max_duration = 5.0   # วินาที — กันมอเตอร์ร้อนสะสม (สงสัยเกี่ยวกับ thermal/undervoltage)
         self.holding_start_time_r = None
         self.holding_start_time_l = None
