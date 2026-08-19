@@ -32,7 +32,7 @@ class CmdVelToMotorClosedLoop(Node):
 
         # ชุดที่ 3: ถัง แนวนอน (horizontal) — วัดจากถังจริง ตอนเดินรอบวง
         self.pwm_calib_pwm_horizontal   = [0.20, 0.40, 0.60, 0.80, 1.00]
-        self.pwm_calib_speed_horizontal = [0.0200, 0.0672, 0.1070, 0.1606, 0.2471]  # m/s
+        self.pwm_calib_speed_horizontal = [0.0000, 0.0672, 0.1070, 0.1606, 0.2471]  # m/s
         # เร็วกว่าแนวดิ่งมาก (ไม่มีแรงโน้มถ่วงต้านตามทิศทางเดิน)
 
         # --- สวิตช์เลือกพื้นผิว — เปลี่ยนแค่บรรทัดนี้บรรทัดเดียวตอนย้ายไปทดสอบพื้นผิวอื่น ---
@@ -42,9 +42,15 @@ class CmdVelToMotorClosedLoop(Node):
         self.max_spd_r = 0.22
         self.max_spd_l = 0.22
 
-        # --- PID แยกฝั่ง (Independent) ---
-        self.kp_r = 3.0;  self.ki_r = 0.35
-        self.kp_l = 3.5;  self.ki_l = 0.40
+        # --- PID แยกฝั่ง (Independent) — 2 ชุด แยกตามกลุ่มพื้นผิว ---
+        # กลุ่มที่ 1: floor + vertical (มีแรงต้าน/แรงโน้มถ่วงสูง ต้องการ PID ที่แรงกว่า)
+        self.kp_r_slow = 3.0;  self.ki_r_slow = 0.35
+        self.kp_l_slow = 3.5;  self.ki_l_slow = 0.40
+
+        # กลุ่มที่ 2: horizontal (แรงต้านน้อยกว่ามาก ไม่มีแรงโน้มถ่วงต้านทิศทางเดิน)
+        # ปรับ kp_l/ki_l ลงจากชุดเดิม เพราะพบว่าล้อซ้ายวิ่งเร็วกว่าเป้าหมายเล็กน้อยอย่างสม่ำเสมอบนแนวนอน
+        self.kp_r_fast = 3.0;  self.ki_r_fast = 0.35
+        self.kp_l_fast = 3.2;  self.ki_l_fast = 0.37
 
         self.integ_limit = 0.5
         self.speed_dt    = 0.1
@@ -52,7 +58,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.cmd_timeout = 0.5
 
         # --- Kick-start (ยืนยันแล้วจากทดสอบจริงบนถัง: pwm=0.6, duration=0.3 -> ขยับใน 0.047s) ---
-        self.kickstart_pwm      = 0.3 #vertical need pwm=0.6, but horizon need 0.15 (approximately)
+        self.kickstart_pwm      = 0.60
         self.kickstart_duration = 0.3   # วินาที
         self.kickstart_movement_threshold = 0.002  # m/s
 
@@ -67,7 +73,7 @@ class CmdVelToMotorClosedLoop(Node):
         # --- Holding torque (กันไถลตอน NO_WELD บนพื้นผิวแนวดิ่ง) ---
         # หมายเหตุ: แนวนอนไม่มีแรงโน้มถ่วงต้านตามทิศทางเดินโดยตรง อาจไม่จำเป็นเท่าแนวดิ่ง
         # แต่เปิดไว้เป็นค่าเริ่มต้นเผื่อความปลอดภัย ปิดได้ด้วย holding_enabled=False ถ้าทดสอบแล้วไม่จำเป็น
-        self.holding_pwm = 0.10 #vertical need 0.4 to hold robot but horizon tal maybe no need or 0.10
+        self.holding_pwm = 0.15
         self.holding_enabled = True
         self.holding_max_duration = 5.0   # วินาที — กันมอเตอร์ร้อนสะสม (สงสัยเกี่ยวกับ thermal/undervoltage)
         self.holding_start_time_r = None
@@ -219,6 +225,14 @@ class CmdVelToMotorClosedLoop(Node):
             self.get_logger().warn(f"Unknown surface_mode '{self.surface_mode}', fallback to vertical")
             return self.pwm_calib_speed_vertical, self.pwm_calib_pwm_vertical
 
+    def get_active_pid_gains(self):
+        """เลือกชุด PID gain ตาม surface_mode: floor+vertical ใช้ชุดเดียวกัน (slow),
+        horizontal แยกชุดของตัวเอง (fast) เพราะแรงต้าน/พลศาสตร์ต่างกันมาก"""
+        if self.surface_mode == 'horizontal':
+            return self.kp_r_fast, self.ki_r_fast, self.kp_l_fast, self.ki_l_fast
+        else:  # 'floor' หรือ 'vertical'
+            return self.kp_r_slow, self.ki_r_slow, self.kp_l_slow, self.ki_l_slow
+
     def speed_to_pwm(self, target_speed):
         """หา PWM (0.0-1.0) จากความเร็วเป้าหมาย โดยเลือกตารางตาม surface_mode
         ตัดจุดที่ speed=0 ออกจากการ interpolate (เช่น PWM 20%,40% บนแนวดิ่งที่ไม่ขยับเลย)
@@ -340,15 +354,18 @@ class CmdVelToMotorClosedLoop(Node):
             self.kickstart_start_r = self.kickstart_start_l = None
             self.last_moving_time_r = self.last_moving_time_l = None
 
+        # เลือกชุด PID gain ตาม surface_mode ปัจจุบัน (เรียกทุกรอบ เผื่อเปลี่ยน surface_mode กลางทาง)
+        kp_r, ki_r, kp_l, ki_l = self.get_active_pid_gains()
+
         (pwm_r, self.integ_r, self.kickstart_start_r, self.last_moving_time_r,
          self.holding_start_time_r, ks_r, hold_r, ff_r) = self.compute_pwm(
-            self.target_r, self.speed_r, self.integ_r, self.kp_r, self.ki_r,
+            self.target_r, self.speed_r, self.integ_r, kp_r, ki_r,
             self.kickstart_start_r, self.last_moving_time_r, self.holding_start_time_r
         )
 
         (pwm_l, self.integ_l, self.kickstart_start_l, self.last_moving_time_l,
          self.holding_start_time_l, ks_l, hold_l, ff_l) = self.compute_pwm(
-            self.target_l, self.speed_l, self.integ_l, self.kp_l, self.ki_l,
+            self.target_l, self.speed_l, self.integ_l, kp_l, ki_l,
             self.kickstart_start_l, self.last_moving_time_l, self.holding_start_time_l
         )
 
@@ -378,8 +395,7 @@ class CmdVelToMotorClosedLoop(Node):
             self.get_logger().info(
                 f"[{self.surface_mode}] TGT(cm/s) R={self.target_r*100:.1f} L={self.target_l*100:.1f} | "
                 f"ACT(cm/s) R={self.speed_r*100:.1f} L={self.speed_l*100:.1f} | "
-                f"FF(%) R={ff_r*100:.0f} L={ff_l*100:.0f}{note} |"
-                f"ticks_R={self.ticks_r} ticks_L={self.ticks_l}"
+                f"FF(%) R={ff_r*100:.0f} L={ff_l*100:.0f}{note}"
             )
 
     # =====================================================================
