@@ -249,7 +249,7 @@ class CmdVelToMotorClosedLoop(Node):
         vy = [p[1] for p in valid]
 
         if target_speed <= vx[0]:
-            return vy[0]
+            return (target_speed / vx[0]) * vy[0]   # scale ตามสัดส่วน แทน floor แข็งๆ
         if target_speed >= vx[-1]:
             return 1.0
 
