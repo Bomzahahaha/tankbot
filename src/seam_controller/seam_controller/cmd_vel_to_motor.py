@@ -378,7 +378,8 @@ class CmdVelToMotorClosedLoop(Node):
             self.get_logger().info(
                 f"[{self.surface_mode}] TGT(cm/s) R={self.target_r*100:.1f} L={self.target_l*100:.1f} | "
                 f"ACT(cm/s) R={self.speed_r*100:.1f} L={self.speed_l*100:.1f} | "
-                f"FF(%) R={ff_r*100:.0f} L={ff_l*100:.0f}{note}"
+                f"FF(%) R={ff_r*100:.0f} L={ff_l*100:.0f}{note} |"
+                f"ticks_R={self.ticks_r} ticks_L={self.ticks_l}"
             )
 
     # =====================================================================
