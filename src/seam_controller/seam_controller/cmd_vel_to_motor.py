@@ -50,7 +50,7 @@ class CmdVelToMotorClosedLoop(Node):
         # กลุ่มที่ 2: horizontal (แรงต้านน้อยกว่ามาก ไม่มีแรงโน้มถ่วงต้านทิศทางเดิน)
         # ปรับ kp_l/ki_l ลงจากชุดเดิม เพราะพบว่าล้อซ้ายวิ่งเร็วกว่าเป้าหมายเล็กน้อยอย่างสม่ำเสมอบนแนวนอน
         self.kp_r_fast = 3.0;  self.ki_r_fast = 0.35
-        self.kp_l_fast = 3.2;  self.ki_l_fast = 0.37
+        self.kp_l_fast = 3.0;  self.ki_l_fast = 0.35
 
         self.integ_limit = 0.5
         self.speed_dt    = 0.1
