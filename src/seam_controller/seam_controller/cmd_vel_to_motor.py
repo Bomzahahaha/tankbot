@@ -52,7 +52,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.cmd_timeout = 0.5
 
         # --- Kick-start (ยืนยันแล้วจากทดสอบจริงบนถัง: pwm=0.6, duration=0.3 -> ขยับใน 0.047s) ---
-        self.kickstart_pwm      = 0.60
+        self.kickstart_pwm      = 0.00
         self.kickstart_duration = 0.3   # วินาที
         self.kickstart_movement_threshold = 0.002  # m/s
 
@@ -67,7 +67,7 @@ class CmdVelToMotorClosedLoop(Node):
         # --- Holding torque (กันไถลตอน NO_WELD บนพื้นผิวแนวดิ่ง) ---
         # หมายเหตุ: แนวนอนไม่มีแรงโน้มถ่วงต้านตามทิศทางเดินโดยตรง อาจไม่จำเป็นเท่าแนวดิ่ง
         # แต่เปิดไว้เป็นค่าเริ่มต้นเผื่อความปลอดภัย ปิดได้ด้วย holding_enabled=False ถ้าทดสอบแล้วไม่จำเป็น
-        self.holding_pwm = 0.15
+        self.holding_pwm = 0.0
         self.holding_enabled = True
         self.holding_max_duration = 5.0   # วินาที — กันมอเตอร์ร้อนสะสม (สงสัยเกี่ยวกับ thermal/undervoltage)
         self.holding_start_time_r = None
