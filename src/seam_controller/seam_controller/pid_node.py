@@ -14,7 +14,7 @@ class SeamTrackerPID(Node):
         self.tank_mode = False
 
         # ── PID gains ────────────────────────────
-        self.kp = 2.5
+        self.kp = 4.0
         self.ki = 0.0
         self.kd = 0.15
 
