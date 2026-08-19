@@ -32,7 +32,7 @@ class CmdVelToMotorClosedLoop(Node):
 
         # ชุดที่ 3: ถัง แนวนอน (horizontal) — วัดจากถังจริง ตอนเดินรอบวง
         self.pwm_calib_pwm_horizontal   = [0.20, 0.40, 0.60, 0.80, 1.00]
-        self.pwm_calib_speed_horizontal = [0.0000, 0.0672, 0.1070, 0.1606, 0.2471]  # m/s
+        self.pwm_calib_speed_horizontal = [0.0200, 0.0672, 0.1070, 0.1606, 0.2471]  # m/s
         # เร็วกว่าแนวดิ่งมาก (ไม่มีแรงโน้มถ่วงต้านตามทิศทางเดิน)
 
         # --- สวิตช์เลือกพื้นผิว — เปลี่ยนแค่บรรทัดนี้บรรทัดเดียวตอนย้ายไปทดสอบพื้นผิวอื่น ---
@@ -52,7 +52,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.cmd_timeout = 0.5
 
         # --- Kick-start (ยืนยันแล้วจากทดสอบจริงบนถัง: pwm=0.6, duration=0.3 -> ขยับใน 0.047s) ---
-        self.kickstart_pwm      = 0.00
+        self.kickstart_pwm      = 0.3 #vertical need pwm=0.6, but horizon need 0.15 (approximately)
         self.kickstart_duration = 0.3   # วินาที
         self.kickstart_movement_threshold = 0.002  # m/s
 
@@ -67,7 +67,7 @@ class CmdVelToMotorClosedLoop(Node):
         # --- Holding torque (กันไถลตอน NO_WELD บนพื้นผิวแนวดิ่ง) ---
         # หมายเหตุ: แนวนอนไม่มีแรงโน้มถ่วงต้านตามทิศทางเดินโดยตรง อาจไม่จำเป็นเท่าแนวดิ่ง
         # แต่เปิดไว้เป็นค่าเริ่มต้นเผื่อความปลอดภัย ปิดได้ด้วย holding_enabled=False ถ้าทดสอบแล้วไม่จำเป็น
-        self.holding_pwm = 0.0
+        self.holding_pwm = 0.10 #vertical need 0.4 to hold robot but horizon tal maybe no need or 0.10
         self.holding_enabled = True
         self.holding_max_duration = 5.0   # วินาที — กันมอเตอร์ร้อนสะสม (สงสัยเกี่ยวกับ thermal/undervoltage)
         self.holding_start_time_r = None
