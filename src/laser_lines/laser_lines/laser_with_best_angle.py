@@ -48,7 +48,7 @@ class ScanToLinesNode(Node):
         
         self.get_logger().info('LaserScan to Lines Node started!')
         self.get_logger().info('Subscribing to: /scan')
-        self.get_logger().info('Subscribing to: /best_angle')
+        self.get_logger().info('Subscribing to: /raw_angle')
         self.get_logger().info('Publishing to: /scan_lines')
         self.get_logger().info('Publishing to: /weld_angle_marker')
     
