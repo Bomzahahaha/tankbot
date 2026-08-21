@@ -41,7 +41,7 @@ class WeldDetectorMedian(Node):
         self.last_known_angle     = float('nan')
         self.missed_count         = 0
         self.reset_threshold      = 10
-        self.angle_diff_threshold = math.radians(1.5)  # เข้มกว่าเดิมมาก
+        self.angle_diff_threshold = math.radians(1.0)  # เข้มกว่าเดิมมาก
 
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0

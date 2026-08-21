@@ -22,7 +22,7 @@ class ScanToLinesNode(Node):
         # Subscriber to weld angle topic
         self.weld_angle_subscriber = self.create_subscription(
             Float32,
-            '/best_angle',
+            '/raw_angle',
             self.weld_angle_callback,
             10
         )
