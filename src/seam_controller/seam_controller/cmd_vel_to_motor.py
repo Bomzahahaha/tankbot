@@ -37,7 +37,7 @@ class CmdVelToMotorClosedLoop(Node):
 
         # --- สวิตช์เลือกพื้นผิว — เปลี่ยนแค่บรรทัดนี้บรรทัดเดียวตอนย้ายไปทดสอบพื้นผิวอื่น ---
         # ตัวเลือก: 'floor' | 'vertical' | 'horizontal'
-        self.surface_mode = 'horizontal'
+        self.surface_mode = 'vertical'
 
         self.max_spd_r = 0.22
         self.max_spd_l = 0.22

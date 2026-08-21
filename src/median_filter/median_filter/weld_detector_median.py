@@ -77,7 +77,7 @@ class WeldDetectorMedian(Node):
         self.center_avg       = 0.093
         self.lateral_scale    = 0.0
         self.lateral_deadband = 0.004
-        self.heading_offset   = math.radians(2.0)
+        self.heading_offset   = math.radians(0.0) #horizon 2.0
 
         self.last_scan_time    = self.get_clock().now()
         self.scan_timeout_sec  = 3.0
