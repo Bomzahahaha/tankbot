@@ -26,6 +26,11 @@ class WeldDetectorMedian(Node):
         self.status_pub = self.create_publisher(String,  '/weld_status', 10)
         self.raw_angle_pub  = self.create_publisher(Float32, '/raw_angle', 10)
 
+        # --- สลับโหมด raw (ปิด filter/gate ทั้งหมด) vs filtered (โหมดปกติ) ---
+        # raw_mode=True  -> ใช้แค่ peak-finding ดิบๆ (top1_angle ตรงๆ) ไม่มี smoothing/gate/shadow-candidate
+        # raw_mode=False -> โหมดปกติ (ทุก filter/gate ทำงานตามเดิม)
+        self.raw_mode = False
+
         self.roi_start = 370
         self.roi_end   = 398   # 109 steps
 
@@ -173,6 +178,31 @@ class WeldDetectorMedian(Node):
 
             found_weld = False
             best_angle = float('nan')
+
+            # ================================================================
+            # โหมด RAW — ปิด filter/gate ทั้งหมด ใช้แค่ peak แรงสุดดิบๆ ตรงๆ
+            # ================================================================
+            if self.raw_mode:
+                if len(peaks) > 0:
+                    top_idx = int(np.argmax(props['prominences']))
+                    local_idx = int(peaks[top_idx])
+                    global_idx = self.roi_start + local_idx
+                    raw_best = self.index_to_angle(global_idx, msg.angle_min, msg.angle_increment)
+                    corrected = raw_best - self.heading_offset
+                    self.publish_status('WELD_FOUND')
+                    out = Float32()
+                    out.data = float(corrected)
+                    self.angle_pub.publish(out)
+                    raw_msg = Float32()
+                    raw_msg.data = float(raw_best)
+                    self.raw_angle_pub.publish(raw_msg)
+                    self.get_logger().info(f'[RAW MODE] angle={math.degrees(corrected):.2f} deg')
+                else:
+                    self.publish_nan('[RAW MODE] No peak', status='NO_WELD')
+                return
+            # ================================================================
+            # จบโหมด RAW — ต่อจากนี้คือโหมดปกติ (filtered) เหมือนเดิมทั้งหมด
+            # ================================================================
 
             was_locked = not math.isnan(self.last_known_angle)
 
