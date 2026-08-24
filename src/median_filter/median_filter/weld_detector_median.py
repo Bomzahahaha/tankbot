@@ -35,8 +35,8 @@ class WeldDetectorMedian(Node):
         self.detection_mode = 'my_filter'
 
         # --- ROI: แยกตามระบบ (เทียบทั้งชุดรวม ROI ที่แต่ละฝั่งหามาเอง ไม่ใช่แค่ algorithm ล้วนๆ) ---
-        self.roi_start_mine   = 1
-        self.roi_end_mine     = 600    # ROI ที่เราหามาเอง (ใช้กับ no_filter, my_filter)
+        self.roi_start_mine   = 370
+        self.roi_end_mine     = 398    # ROI ที่เราหามาเอง (ใช้กับ no_filter, my_filter)
         self.roi_start_senior = 330
         self.roi_end_senior   = 438    # ROI ต้นฉบับของรุ่นพี่ (ใช้กับ senior_filter เท่านั้น)
 
