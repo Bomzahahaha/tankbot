@@ -138,7 +138,7 @@ class ScanToLinesNode(Node):
         # Create line segments
         for i, range_value in enumerate(msg.ranges):
 
-            if i < 0 or i > 725:
+            if i < 370 or i > 398:
                 continue  # Skip this index
 
             if (math.isnan(range_value) or 
