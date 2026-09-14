@@ -67,7 +67,7 @@ class WeldDetectorMedian(Node):
         self.relock_candidate_angle   = float('nan')
         self.relock_candidate_count   = 0
         self.relock_confirm_threshold = 5
-        self.relock_tolerance         = math.radians(3.0)
+        self.relock_tolerance         = math.radians(2.0)
 
         self.streak_sign = 0
         self.streak_len  = 0
