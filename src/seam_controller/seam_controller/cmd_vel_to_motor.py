@@ -58,7 +58,7 @@ class CmdVelToMotorClosedLoop(Node):
         self.cmd_timeout = 0.5
 
         # --- Kick-start (ยืนยันแล้วจากทดสอบจริงบนถัง: pwm=0.6, duration=0.3 -> ขยับใน 0.047s) ---
-        self.kickstart_pwm      = 0.60
+        self.kickstart_pwm      = 0.0
         self.kickstart_duration = 0.3   # วินาที
         self.kickstart_movement_threshold = 0.002  # m/s
 
