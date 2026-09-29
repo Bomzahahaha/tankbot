@@ -222,7 +222,31 @@ self.surface_mode = 'floor'   # options: 'floor' | 'vertical' | 'horizontal'
 ```
 
 Rebuild (`colcon build`) after changing this value.
+---
 
+## Quick Commands (Shell Aliases)
+
+These aliases are defined in `~/.bashrc` on the robot's Raspberry Pi
+for convenience during development/testing. They are **not part of
+this repository** — set them up manually on any new machine.
+
+| Alias | Command | Purpose |
+|---|---|---|
+| `run_lidar` | `ros2 launch urg_node2 urg_node2.launch.py` | Start the LiDAR driver — **must run first** |
+| `run_all` | `ros2 launch seam_controller system.launch.py` | Start detection + control (does NOT include the LiDAR driver) |
+| `run_detect` | `ros2 run median_filter weld_detector_median` | Run detection node only |
+| `run_pid` | `ros2 run seam_controller pid_node` | Run heading control node only |
+| `run_motor` | `ros2 run seam_controller cmd_vel_to_motor` | Run motor control node only |
+| `run_logs` | `ros2 run seam_controller tracking_logger` | Run supplementary logger (separate from the CSV logging built into `cmd_vel_to_motor.py`) |
+
+**Typical startup order:**
+\`\`\`bash
+run_lidar     # Terminal 1 — start this first, always
+run_all       # Terminal 2 — detection + control
+run_logs      # Terminal 3 — optional, extra logging
+\`\`\`
+
+To set these up on a new machine, add the alias lines above to `~/.bashrc`.
 ---
 
 ## Key Parameters
