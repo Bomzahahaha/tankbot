@@ -1,18 +1,106 @@
-# Capstone TurtleBot: Weld Seam Tracking Robot
+# TANKBOT — Weld Seam Tracking Robot
 
-This repository contains the source code for my senior/capstone project, which focuses on developing a TurtleBot-based robotic system for weld seam tracking. The system uses sensor data processing and ROS 2 nodes to detect a simulated weld seam and control the robot motion along the target path.
+A magnetic wall-climbing robot that tracks weld seams on chemical storage tanks. Built on top of a previous senior-project prototype, this system uses a 2D LiDAR to detect the weld seam position and closes the loop with wheel encoders to control heading and speed continuously along the seam.
 
-## Project Overview
+Developed as part of a co-operative education (internship) project — **REPCO NEX Industrial Solutions**
+Duration: 4 June – 30 September 2026
 
-The goal of this project is to develop an autonomous weld seam tracking system using a mobile robot platform. The robot is designed to detect the position of a weld seam and adjust its movement based on the detected seam location.
+**Repository:** https://github.com/Bomzahahaha/tankbot
 
-This project is part of my senior/capstone work and is intended to demonstrate the integration of:
+---
 
-- ROS 2-based robot control
-- Sensor data processing
-- Weld seam detection
-- Motion control using velocity commands
-- Data logging for testing and analysis
+## Table of Contents
+
+- [Hardware](#hardware)
+- [System Overview](#system-overview)
+- [Detection Specification](#detection-specification)
+- [Repository Structure](#repository-structure)
+- [Node & Topic Diagram](#node--topic-diagram)
+- [Main Components (Software)](#main-components-software)
+- [Installation](#installation)
+- [Running the System](#running-the-system)
+- [Key Parameters](#key-parameters)
+- [Speed Calibration](#speed-calibration)
+- [Results](#results)
+- [Known Limitations](#known-limitations)
+- [Future Work](#future-work)
+- [Detailed Documentation](#detailed-documentation)
+
+---
+
+## Hardware
+
+| Component | Model / Spec | Role |
+|---|---|---|
+| **Single-board computer** | **Raspberry Pi 5** | Runs ROS 2, all detection/control nodes |
+| **LiDAR** | **Hokuyo URG-04LX-UG01** (2D scanning LiDAR) | Detects weld seam position |
+| Motors | LX31WG-24-60-101D × 4 | Drives the magnetic wheels |
+| Wheel encoders | OMRON E6A2-C, 200 ppr | Measures actual wheel speed for closed-loop control |
+| Microcontroller (encoder reading) | Arduino Nano | Reads encoder ticks, sends to Pi over Serial (115200 baud) |
+| Battery | Li-ion 24V × 2 | Power source |
+| Power converter | 5V/5A step-down module | Powers the Raspberry Pi 5 via USB-C |
+| Wheels | Magnetic wheels, radius 29.5 mm | Adhesion + locomotion on steel tank surface |
+| Wheelbase | 300 mm | Distance between left and right wheels |
+
+### LiDAR specification (Hokuyo URG-04LX-UG01)
+
+| Spec | Value |
+|---|---|
+| Scan angle (FOV) | 240° |
+| Angular resolution | 0.36° |
+| Accuracy (manufacturer spec, 60mm–1m range) | ±30 mm |
+| Measured noise at working distance (~120mm, n=91 static scans) | ±1.9 mm |
+| Scan rate | 10 Hz |
+| Note | This model is discontinued by the manufacturer; indoor use only (rated for ambient light up to 6,000–10,000 lux) |
+
+**Why this sensor:** It was inherited from the previous project (previous senior work). This project's scope is focused on improving the software algorithm and mounting position — not replacing the sensor hardware. See [Future Work](#future-work) for the planned camera-based upgrade.
+
+---
+
+## System Overview
+
+```
+LiDAR scan
+    ↓
+Filter signal + locate weld seam   (weld_detector_median)
+    ↓
+Weld seam angle (/best_angle)
+    ↓
+Compute heading + target speed     (pid_node)
+    ↓
+/cmd_vel
+    ↓
+Convert to PWM for each wheel motor, closed loop with encoder feedback  (cmd_vel_to_motor)
+    ↓
+Motors + magnetic wheels
+```
+
+---
+
+## Detection Specification
+
+**Design target (requirement set before development):**
+
+| Item | Target |
+|---|---|
+| Weld seam height | 1 – 8 mm |
+| Heading error | ≤ ±1.5° |
+| Offset error | ≤ ±4 mm |
+| Supported tank wall thickness | 6 – 300 mm |
+
+**Actual measured performance:**
+
+| Item | Result |
+|---|---|
+| Smallest weld seam reliably tracked | 4.6 mm |
+| `min_height_threshold` in code | 3.5 mm |
+| Measured LiDAR noise at working distance | ±1.9 mm |
+| Mean heading error while tracking (horizontal surface) | 0.82° (max 1.41°) |
+| Mean heading error while tracking (vertical surface) | 0.30° (max 3.52°) |
+
+> **Note:** The system has not yet been tested together with an actual TOFD probe. The acceptable offset margin for mounting a probe in the future is not yet determined.
+
+---
 
 ## Repository Structure
 
@@ -20,117 +108,198 @@ This project is part of my senior/capstone work and is intended to demonstrate t
 capstone_turtlebot/
 ├── src/
 │   ├── median_filter/
-│   │   └── Sensor data filtering and weld detection node
+│   │   └── median_filter/
+│   │       └── weld_detector_median.py   ← detects weld seam position from LiDAR
 │   │
-│   └── seam_controller/
-│       └── Robot control, PID control, launch files, and logging nodes
+│   ├── seam_controller/
+│   │   ├── seam_controller/
+│   │   │   ├── pid_node.py               ← heading control (PD control)
+│   │   │   └── cmd_vel_to_motor.py       ← wheel speed control (PI + feedforward) + motor PWM
+│   │   └── launch/
+│   │       └── system.launch.py          ← launches all 3 nodes together
+│   │
+│   ├── laser_lines/          ← RViz visualization helper (not part of the control pipeline)
+│   ├── gaussian/              ← experimental package (not used in main pipeline)
+│   └── moving_average/        ← experimental package (not used in main pipeline)
 │
-├── utils/
-│   └── Utility scripts or supporting files
-│
-├── data/
-│   └── Collected data or experimental results
-│
-├── docs/
-│   └── Documentation, diagrams, and project-related notes
-│
+├── logs/          ← CSV logs from each test run (auto-generated by cmd_vel_to_motor)
+├── docs/          ← detailed documentation (see below)
+├── Utils/         ← helper scripts
 ├── .gitignore
 └── README.md
-Main Components
-1. Median Filter Package
+```
 
-The median_filter package is responsible for processing sensor data and reducing noise before seam detection. It helps improve the stability of the detected weld seam position.
+> `build/`, `install/`, `log/` (ROS 2 build artifacts) are not tracked in this repo — they are regenerated by `colcon build`.
 
-Main file:
+---
 
-src/median_filter/median_filter/weld_detector_median.py
-2. Seam Controller Package
+## Node & Topic Diagram
 
-The seam_controller package controls the motion of the robot based on the detected seam position. It includes PID control, velocity conversion, and logging nodes.
+```
+                    /scan (LaserScan)
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │  weld_detector_median  │
+              └───────────────────────┘
+                    │           │
+          /best_angle        /weld_status
+        (Float32, rad)      (String: WELD_FOUND / NO_WELD / TIMEOUT / ERROR)
+                    │           │
+                    ▼           ▼
+              ┌───────────────────────┐
+              │       pid_node         │
+              └───────────────────────┘
+                          │
+                      /cmd_vel (Twist)
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │   cmd_vel_to_motor     │──── Serial (115200) ────► Arduino Nano
+              └───────────────────────┘                              │
+                    │           │                                    │
+        /right_wheel_speed  /left_wheel_speed                  encoder ticks
+           /right_ticks        /left_ticks                     (sent back over Serial)
+```
 
-Main files:
+---
 
-src/seam_controller/seam_controller/pid_node.py
-src/seam_controller/seam_controller/cmd_vel_to_motor.py
-src/seam_controller/seam_controller/control_logger.py
-src/seam_controller/seam_controller/tracking_logger.py
-src/seam_controller/launch/system.launch.py
-System Concept
+## Main Components (Software)
 
-The system works by detecting the weld seam position from sensor data. The detected position is then compared with the desired center position. The error is sent to a controller, which generates motion commands to adjust the robot's movement.
+### 1. `weld_detector_median.py` — Weld seam detection
 
-Basic workflow:
+Subscribes to `/scan` and locates the weld seam angle:
 
-Sensor Data
-    ↓
-Filtering
-    ↓
-Weld Seam Detection
-    ↓
-Error Calculation
-    ↓
-PID Controller
-    ↓
-Velocity Command
-    ↓
-Robot Motion
-Requirements
+1. Crop the scan to the Region of Interest (ROI)
+2. Smooth the signal with a Savitzky-Golay filter
+3. Estimate the background surface level with a median filter and subtract it (leaving only the raised bump — the seam candidate)
+4. Find the most prominent peak, filter by height/width/angle-change from the previous frame
+5. Confirm with multiple layered gates (shadow-candidate buffer, relock confirmation, drift/streak gate) before trusting it as a real weld seam
 
-This project is developed and tested with:
+**Has 3 selectable detection modes** (single variable, `self.detection_mode`): `'my_filter'` is the active mode used in production. `'no_filter'` and `'senior_filter'` are kept only for comparison against the baseline / previous system — not used in normal operation.
 
-Raspberry Pi 5
-ROS 2
-Python 3
-TurtleBot-based mobile robot platform
-Sensor for seam detection, such as LiDAR or depth-related sensor
-Installation
+### 2. `pid_node.py` — Heading control
 
-Clone this repository:
+Subscribes to `/best_angle`, computes a turning command (PD control) and a forward speed (quadratic fall-off as heading error increases), publishes `/cmd_vel`.
 
-git clone https://github.com/deeeiei/Senior.git
+### 3. `cmd_vel_to_motor.py` — Wheel speed control & motor driver
 
-Go to the project directory:
+Subscribes to `/cmd_vel`, converts it into per-wheel target speeds (differential drive), computes PWM using feedforward (from a per-surface calibration table) plus PI control correcting against the actual speed measured from the encoders. Also includes kickstart and holding-torque mechanisms, and logs every cycle to CSV.
 
-cd Senior
+---
 
-Build the ROS 2 workspace:
+## Installation
 
+```bash
+git clone https://github.com/Bomzahahaha/tankbot.git
+cd tankbot
 colcon build
-
-Source the workspace:
-
 source install/setup.bash
-Running the System
+```
 
-To run the complete system using the launch file:
+---
 
+## Running the System
+
+**Run everything with the launch file:**
+
+```bash
 ros2 launch seam_controller system.launch.py
+```
 
-Alternatively, individual nodes can be run separately depending on the testing setup.
+**Or run each node separately (for debugging):**
 
-Example:
-
+```bash
 ros2 run median_filter weld_detector_median
 ros2 run seam_controller pid_node
-Notes
+ros2 run seam_controller cmd_vel_to_motor
+```
 
-The build/, install/, and log/ folders are not included in this repository because they are generated automatically when building the ROS 2 workspace.
+**Before testing on a new surface**, set `surface_mode` in `cmd_vel_to_motor.py`:
 
-If the workspace is rebuilt, these folders will be created again by running:
+```python
+self.surface_mode = 'floor'   # options: 'floor' | 'vertical' | 'horizontal'
+```
 
-colcon build
-Project Status
+Rebuild (`colcon build`) after changing this value.
 
-This project is currently under development as part of my senior/capstone project. The current version focuses on basic weld seam detection, robot motion control, and experimental testing.
+---
 
-Future improvements may include:
+## Key Parameters
 
-Improving sensor accuracy
-Upgrading from Raspberry Pi to NVIDIA Jetson
-Testing with additional sensors such as TOF or TOFD-related sensors
-Improving the robustness of the seam tracking algorithm
-Adding more experimental results and performance evaluation
-Author
+Main tunable parameters (see in-code comments for full detail and tuning history):
 
-Developed by Sawaddiwat Athiwattananont
-Senior/Capstone Project
+| File | Parameter | Current value | Meaning |
+|---|---|---|---|
+| `weld_detector_median.py` | `roi_start_mine`, `roi_end_mine` | 370, 398 | Scan angle window used to search for the seam |
+| | `sg_framelen` | 9 | Signal smoothing window (Savitzky-Golay) |
+| | `med_window` | 21 | Background-estimation window size |
+| | `min_height_threshold` | 3.5 mm | Minimum bump height accepted as a seam |
+| | `angle_diff_threshold` | 1.0° | Max angle change per frame accepted |
+| `pid_node.py` | `kp`, `kd` | 4.0, 0.15 | PD gains for heading control |
+| | `max_linear_speed` | surface-dependent | Forward speed ceiling |
+| `cmd_vel_to_motor.py` | `kp_r/l_slow`, `kp_r/l_fast` | 3.0–3.5 | PI gains for wheel speed control (per surface) |
+| | `surface_mode` | `'floor'` | Selects which calibration table to use |
+
+---
+
+## Speed Calibration
+
+Measured PWM → speed table, used as feedforward, per surface:
+
+| PWM | Floor (m/s) | Horizontal (m/s) | Vertical (m/s) |
+|---|---|---|---|
+| 20% | 0.034 | 0.000 | 0.000 |
+| 40% | 0.080 | 0.067 | 0.000 |
+| 60% | 0.126 | 0.107 | 0.039 |
+| 80% | 0.175 | 0.161 | 0.082 |
+| 100% | 0.220 | 0.247 | 0.087 |
+
+> On the vertical surface, PWM 20–40% is a true dead zone — not enough force to overcome gravity, wheels don't move at all.
+
+---
+
+## Results
+
+| Test | Result |
+|---|---|
+| Straight-line tracking on flat floor | 5/5 (at 3.5 cm/s and 7 cm/s) |
+| Real tank test — vertical surface | 5/5 (at 7 cm/s) |
+| Real tank test — horizontal surface | 5/5 (at 7 cm/s) |
+| Crossing a seam joint (bump) | 1/1 |
+| Speed tracking error (vs. previous system) | Reduced from ~400% to ~15–22% |
+
+---
+
+## Known Limitations
+
+- Smallest reliably-tracked weld seam is 4.6 mm (accuracy below this is not verified)
+- The robot moves in an "alternate run and stop" pattern due to the multi-frame confirmation gates before trusting a detection
+- At 10 cm/s test speed, the Raspberry Pi shut down unexpectedly — suspected voltage drop from motor current spikes (e.g. during kickstart); not yet confirmed with measurement
+- On the vertical surface, left/right wheel speeds diverge noticeably more than on the horizontal surface (mean difference 0.83 cm/s vs 0.20 cm/s)
+- The LiDAR used (Hokuyo URG-04LX-UG01) is discontinued and rated for indoor use only
+- Not yet certified for hazardous-area (Ex-rated) operation
+- Not yet tested together with an actual TOFD probe
+
+---
+
+## Future Work
+
+- Replace the LiDAR with a camera (0.045–0.089 mm/pixel at 150–300 mm working distance — roughly 10–17× higher spatial resolution than the current LiDAR)
+- Test on a full-scale real tank (current testing uses a half-cylinder mock-up, radius ≈1.2 m)
+- Investigate and fix the high-speed power shutdown issue
+- Test with an actual TOFD probe to determine the real acceptable offset margin
+
+---
+
+## Detailed Documentation
+
+- [`docs/problems-and-solutions.md`](docs/problems-and-solutions.md) — Full Why-Why analysis, before/after comparison for every subsystem (power, speed control, LiDAR mounting, LiDAR holder, filtering, peak selection), and parameter tuning history
+
+---
+
+## Author
+
+Boonyapat Khammungkhun
+Department of Automation Robotics and Intelligent System, Faculty of Engineering
+Co-operative Education, REPCO NEX Industrial Solutions (4 June – 30 September 2026)
